@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+*.egg-info/
+
+# local overrides (has no secrets by default, but keep machine-specific
+# tweaks like STORAGE_DIR out of version control)
+.env
+
+# local job/render storage if ever run outside Docker
+data/

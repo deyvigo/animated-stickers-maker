@@ -1,0 +1,33 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+      Android 11+ package visibility: without this, PackageManager/Intent
+      resolution against com.whatsapp silently fails (isWhatsAppInstalled
+      returns false, and the ENABLE_STICKER_PACK intent finds no activity)
+      even though WhatsApp is installed. This is a library manifest, and
+      Android's manifest merger folds <queries> from library manifests into
+      the final app manifest automatically — no config plugin needed.
+    -->
+    <queries>
+        <package android:name="com.whatsapp" />
+        <package android:name="com.whatsapp.w4b" />
+    </queries>
+
+    <application>
+        <!--
+          android:name is relative to this manifest's package, which is set
+          by android/build.gradle's `namespace` (no `package` attribute
+          here — that's the AGP 7+ convention). ${applicationId} is a
+          built-in manifest placeholder that Android's manifest merger
+          resolves using the final app's applicationId, even though it's
+          referenced from this library's manifest.
+        -->
+        <provider
+            android:name=".StickerContentProvider"
+            android:authorities="${applicationId}.stickercontentprovider"
+            android:enabled="true"
+            android:exported="true"
+            android:readPermission="com.whatsapp.sticker.READ" />
+    </application>
+
+</manifest>

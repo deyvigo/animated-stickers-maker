@@ -1,0 +1,9 @@
+{
+  "platforms": ["apple", "android", "web"],
+  "apple": {
+    "modules": ["WhatsappStickersModule"]
+  },
+  "android": {
+    "modules": ["expo.modules.whatsappstickers.WhatsappStickersModule"]
+  }
+}

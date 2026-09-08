@@ -1,0 +1,26 @@
+services:
+  api:
+    build: .
+    ports:
+      # Bind to 0.0.0.0 inside the container (see app/main.py's uvicorn
+      # command) so your phone can reach this over the LAN at
+      # http://<your-mac-ip>:8000 — not just http://localhost:8000.
+      - "8000:8000"
+    volumes:
+      # Named volume: job/render artifacts survive `docker compose restart`.
+      - stickers_storage:/data/storage
+      # Bind mount for hot-reload during development. Comment this out for
+      # a prod-like run of the built image as-is.
+      - ./app:/app/app:ro
+    environment:
+      - STORAGE_DIR=/data/storage
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+volumes:
+  stickers_storage:
