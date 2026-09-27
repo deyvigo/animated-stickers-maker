@@ -6,6 +6,7 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -63,9 +64,28 @@ async def handle_app_error(request: Request, exc: AppError) -> JSONResponse:
     )
 
 
+@app.exception_handler(RequestValidationError)
+async def handle_validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """FastAPI's own request-body validation errors (422) don't go through
+    AppError, so without this they'd reach the app as `{"detail": [...]}` —
+    a shape the client's error parsing doesn't understand, which silently
+    dropped the error message entirely (empty string) instead of showing
+    anything. Normalize to the same {code, message, detail} shape as
+    everything else.
+    """
+    logger.warning("request validation failed for %s: %s", request.url.path, exc.errors())
+    first = exc.errors()[0] if exc.errors() else None
+    summary = first.get("msg", "Solicitud inválida.") if first else "Solicitud inválida."
+    return JSONResponse(
+        status_code=422,
+        content={"code": "invalid_request", "message": summary, "detail": str(exc.errors())},
+    )
+
+
 @app.get("/health")
-async def health() -> dict:
-    return {"status": "ok"}
+async def healtt() -> dict:
+    """Quick manual check from a phone browser — just a static message."""
+    return {"message": "Hello World"}
 
 
 app.include_router(jobs.router)

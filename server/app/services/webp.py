@@ -26,17 +26,27 @@ logger = logging.getLogger("stickers.webp")
 # output fits animated_max_bytes. Ordered to prefer keeping fps first
 # (motion smoothness reads more than a bit of compression noise), then
 # giving up fps once quality is already low.
+#
+# For long clips (close to WhatsApp's 10s cap), 500KB just isn't enough
+# bytes/frame to hold much quality at 15fps — crushing the quantizer to the
+# floor (q=20) produces visible blocking on real footage. Trading more fps
+# for less quantizer damage reads better: a slightly choppier loop looks
+# more like "a sticker" than a blocky one. So once quality drops below ~35,
+# give up fps further instead of continuing to crush the quantizer.
 _ANIMATED_LADDER: list[tuple[int, int]] = [
     (15, 75),
     (15, 60),
-    (15, 50),
-    (15, 40),
-    (12, 40),
-    (12, 32),
-    (10, 32),
-    (10, 26),
-    (8, 26),
-    (8, 20),
+    (15, 45),
+    (12, 50),
+    (12, 38),
+    (10, 45),
+    (10, 35),
+    (8, 40),
+    (8, 30),
+    (6, 35),
+    (6, 26),
+    (5, 30),
+    (5, 22),
 ]
 
 # Quality ladder for static stickers (libwebp -q:v), against 100KB.
@@ -51,6 +61,10 @@ _MAX_DURATION_RETRIES = 4
 
 @dataclass
 class CropPixels:
+    # May be negative, and x+width / y+height may exceed the source frame —
+    # that's the point (see CropRect's docstring): the editor's zoom/pan UI
+    # can legitimately ask for a crop bigger than or offset outside the
+    # actual video, expecting the uncovered area to come back black.
     x: int
     y: int
     width: int
@@ -58,24 +72,57 @@ class CropPixels:
 
 
 def crop_to_pixels(crop: CropRect, source_width: int, source_height: int) -> CropPixels:
-    """Converts a normalized [0,1] crop rect to even pixel coordinates,
-    clamped to the source frame. Even dimensions avoid odd-size chroma
-    subsampling issues in the scale/pad filter chain."""
+    """Converts a normalized crop rect to even pixel coordinates. Deliberately
+    does NOT clamp to the source frame — see CropPixels' docstring. Even
+    dimensions avoid odd-size chroma subsampling issues in the scale/pad
+    filter chain."""
 
     def even(n: float) -> int:
-        return max(2, int(n) - (int(n) % 2))
+        # Rounds toward an even integer. No floor here — x/y can legitimately
+        # be negative (or zero), unlike width/height below.
+        i = int(n)
+        return i - (i % 2)
+
+    def even_size(n: float) -> int:
+        return max(2, even(n))
 
     x = even(crop.x * source_width)
     y = even(crop.y * source_height)
-    w = even(crop.width * source_width)
-    h = even(crop.height * source_height)
-    x = min(x, max(0, source_width - w))
-    y = min(y, max(0, source_height - h))
+    w = even_size(crop.width * source_width)
+    h = even_size(crop.height * source_height)
     return CropPixels(x=x, y=y, width=w, height=h)
 
 
-def _crop_scale_pad_filter(crop_px: CropPixels, dimension: int, fps: int | None) -> str:
-    parts = [f"crop={crop_px.width}:{crop_px.height}:{crop_px.x}:{crop_px.y}"]
+def _crop_scale_pad_filter(
+    crop_px: CropPixels, source_width: int, source_height: int, dimension: int, fps: int | None
+) -> str:
+    # A crop can extend past the source frame on any side (see CropPixels).
+    # ffmpeg's crop filter can't read pixels that don't exist, so when that
+    # happens we first pad the source out to a big-enough transparent canvas
+    # and shift the crop origin to match, then crop from that canvas instead
+    # of the raw source. When the crop is fully inside the frame (the common
+    # case), all four margins are 0 and this pad is a no-op. Transparent
+    # (not black) so the letterboxed area reads as a proper sticker
+    # cutout — it shows through as whatever's behind it in the chat.
+    left = max(0, -crop_px.x)
+    top = max(0, -crop_px.y)
+    right = max(0, (crop_px.x + crop_px.width) - source_width)
+    bottom = max(0, (crop_px.y + crop_px.height) - source_height)
+
+    parts = []
+    crop_x, crop_y = crop_px.x, crop_px.y
+    if left or top or right or bottom:
+        padded_w = source_width + left + right
+        padded_h = source_height + top + bottom
+        # format=yuva420p forces an alpha plane onto the (opaque) decoded
+        # source before pad runs — without it, pad's transparent color is
+        # silently discarded and the letterboxed area comes back opaque
+        # black regardless of what color we ask for.
+        parts.append("format=yuva420p")
+        parts.append(f"pad={padded_w}:{padded_h}:{left}:{top}:color=#00000000")
+        crop_x, crop_y = crop_px.x + left, crop_px.y + top
+
+    parts.append(f"crop={crop_px.width}:{crop_px.height}:{crop_x}:{crop_y}")
     if fps is not None:
         parts.append(f"fps={fps}")
     parts.append(
@@ -114,12 +161,14 @@ async def _render_animated_attempt(
     start: float,
     end: float,
     crop_px: CropPixels,
+    source_width: int,
+    source_height: int,
     fps: int,
     quality: int,
     dimension: int,
     timeout: float,
 ) -> None:
-    vf = _crop_scale_pad_filter(crop_px, dimension, fps)
+    vf = _crop_scale_pad_filter(crop_px, source_width, source_height, dimension, fps)
     await _run_ffmpeg(
         [
             "-ss", f"{start:.3f}",
@@ -151,6 +200,8 @@ async def fit_animated(
     start: float,
     end: float,
     crop_px: CropPixels,
+    source_width: int,
+    source_height: int,
     settings: Settings,
 ) -> RenderFitInfo:
     duration = end - start
@@ -162,8 +213,8 @@ async def fit_animated(
         clip_end = start + duration
         for fps, quality in _ANIMATED_LADDER:
             await _render_animated_attempt(
-                source, out_path, start, clip_end, crop_px, fps, quality,
-                settings.sticker_dimension, settings.ffmpeg_timeout_seconds,
+                source, out_path, start, clip_end, crop_px, source_width, source_height,
+                fps, quality, settings.sticker_dimension, settings.ffmpeg_timeout_seconds,
             )
             size = out_path.stat().st_size
             if size <= settings.animated_max_bytes:
@@ -191,9 +242,11 @@ async def fit_static(
     out_path: Path,
     frame_at: float,
     crop_px: CropPixels,
+    source_width: int,
+    source_height: int,
     settings: Settings,
 ) -> RenderFitInfo:
-    vf = _crop_scale_pad_filter(crop_px, settings.sticker_dimension, fps=None)
+    vf = _crop_scale_pad_filter(crop_px, source_width, source_height, settings.sticker_dimension, fps=None)
     for quality in _STATIC_LADDER:
         await _run_ffmpeg(
             [
@@ -224,6 +277,8 @@ async def render_tray_icon(
     out_path: Path,
     frame_at: float,
     crop_px: CropPixels,
+    source_width: int,
+    source_height: int,
     settings: Settings,
 ) -> None:
     """96x96 tray icon derived from the same frame/crop as the sticker.
@@ -232,7 +287,7 @@ async def render_tray_icon(
     output format matches `out_path`'s extension regardless of which rung
     of the quality ladder it takes to fit the budget.
     """
-    vf = _crop_scale_pad_filter(crop_px, settings.tray_dimension, fps=None)
+    vf = _crop_scale_pad_filter(crop_px, source_width, source_height, settings.tray_dimension, fps=None)
     for quality in _STATIC_LADDER:
         await _run_ffmpeg(
             [

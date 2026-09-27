@@ -22,6 +22,7 @@ export type ErrorCode =
   | 'rate_limited'
   | 'not_found'
   | 'timeout'
+  | 'invalid_request'
   | 'internal_error';
 
 export interface ApiError {
@@ -99,12 +100,24 @@ export class ApiRequestError extends Error {
   }
 }
 
+// Every endpoint here just writes state and kicks off a background task
+// (see server/app/api/jobs.py, renders.py) — the actual yt-dlp/ffmpeg work
+// never blocks the HTTP response. So a request that's still pending after
+// this long isn't "still working", it's stuck (dropped Wi-Fi, phone
+// switched networks, backend mid-restart) — without a timeout, `fetch`
+// hangs forever and the caller's loading spinner never clears.
+const REQUEST_TIMEOUT_MS = 20_000;
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   assertApiConfigured();
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
   let response: Response;
   try {
     response = await fetch(`${API_BASE_URL}${path}`, {
       ...init,
+      signal: controller.signal,
       headers: {
         'content-type': 'application/json',
         'x-device-id': getDeviceId(),
@@ -112,6 +125,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       },
     });
   } catch (cause) {
+    if (cause instanceof Error && cause.name === 'AbortError') {
+      throw new ApiRequestError({
+        code: 'timeout',
+        message: 'El servidor no respondió a tiempo. Revisá tu conexión y probá de nuevo.',
+        detail: String(cause),
+      });
+    }
     throw new ApiRequestError({
       code: 'internal_error',
       message:
@@ -119,14 +139,25 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
         'EXPO_PUBLIC_API_URL apunte a la IP de tu Mac en la red local.',
       detail: String(cause),
     });
+  } finally {
+    clearTimeout(timeoutId);
   }
 
   if (!response.ok) {
+    const fallback: ApiError = {
+      code: 'internal_error',
+      message: `Error del servidor (HTTP ${response.status}).`,
+    };
     let apiError: ApiError;
     try {
-      apiError = await response.json();
+      const body = await response.json();
+      // Defensive: if the body doesn't have a non-empty `message` (an
+      // unexpected shape from some future endpoint, a proxy's own error
+      // page, etc.), fall back instead of surfacing a blank error to the
+      // user — this is exactly what silently swallowed a 422 before.
+      apiError = body && typeof body.message === 'string' && body.message ? body : fallback;
     } catch {
-      apiError = { code: 'internal_error', message: `Error del servidor (HTTP ${response.status}).` };
+      apiError = fallback;
     }
     throw new ApiRequestError(apiError, response.status);
   }

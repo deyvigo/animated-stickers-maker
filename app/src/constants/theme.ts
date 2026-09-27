@@ -26,6 +26,31 @@ export const Colors = {
 
 export type ThemeColor = keyof typeof Colors.light & keyof typeof Colors.dark;
 
+/**
+ * "Kiosco nocturno" — the corner phone-repair/copy kiosk at night. Pinned
+ * dark palette shared by the home, packs, and pack-detail screens; not tied
+ * to the system light/dark scheme like `Colors` above. See
+ * .impeccable/surfaces/app-src-app-tabs-index-tsx.md for the direction
+ * contract this implements.
+ */
+export const Kiosk = {
+  // Pinned to Colors.dark.background (not a Kiosk-only hex) so these screens'
+  // background always matches the native bottom tab bar, which reads its
+  // own color from Colors[scheme] in app-tabs.tsx.
+  background: Colors.dark.background,
+  surface: '#141517',
+  // A touch darker than `surface`: the "cut into the case" slot color for
+  // inputs, image placeholders, and grid cells sitting inside a card.
+  inset: '#0F1011',
+  border: 'rgba(194, 231, 218, 0.24)',
+  borderFocused: 'rgba(194, 231, 218, 0.6)',
+  accent: '#C2E7DA',
+  onAccent: '#0B0C0D',
+  text: '#F2F1ED',
+  textSecondary: '#7C948C',
+  error: '#FF6B5E',
+} as const;
+
 export const Fonts = Platform.select({
   ios: {
     /** iOS `UIFontDescriptorSystemDesignDefault` */

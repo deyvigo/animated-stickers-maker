@@ -21,7 +21,6 @@ const config: ExpoConfig = {
   },
   android: {
     package: "com.deyvigo.stickersmaker",
-    usesCleartextTraffic,
     adaptiveIcon: {
       backgroundColor: "#E6F4FE",
       foregroundImage: "./assets/images/android-icon-foreground.png",
@@ -47,6 +46,17 @@ const config: ExpoConfig = {
     "expo-video",
     "expo-sqlite",
     "expo-sharing",
+    [
+      "expo-build-properties",
+      {
+        // usesCleartextTraffic isn't a top-level `android.*` Expo config
+        // field (an earlier version of this file put it there — Expo
+        // silently ignores unknown keys instead of erroring, so that never
+        // actually applied). This plugin is the real, documented way to
+        // set it on the AndroidManifest.
+        android: { usesCleartextTraffic },
+      },
+    ],
   ],
   experiments: {
     typedRoutes: true,

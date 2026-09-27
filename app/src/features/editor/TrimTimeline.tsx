@@ -1,15 +1,15 @@
 import { Image } from 'expo-image';
 import { useCallback, useState } from 'react';
-import { LayoutChangeEvent, StyleSheet, View } from 'react-native';
+import { LayoutChangeEvent, StyleSheet, Text, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
   runOnJS,
+  SharedValue,
   useAnimatedStyle,
   useSharedValue,
 } from 'react-native-reanimated';
 
-import { ThemedText } from '@/components/themed-text';
-import { Spacing } from '@/constants/theme';
+import { Kiosk, Spacing } from '@/constants/theme';
 
 const HANDLE_WIDTH = 20;
 const TRACK_HEIGHT = 64;
@@ -29,6 +29,14 @@ interface AnimatedRangeProps {
   maxClipSeconds: number;
   minClipSeconds?: number;
   onChange: (start: number, end: number) => void;
+  /** Live playback position (seconds), updated ~10x/sec from the video
+   * player's timeUpdate event. A shared value so it drives the moving line
+   * on the UI thread without re-rendering React on every tick. */
+  playbackTime?: SharedValue<number>;
+  /** Fired once when a handle drag ends (not on every frame of the drag) —
+   * used to restart playback from the new `start` so it doesn't sit
+   * wherever it happened to be when the range moved. */
+  onDragEnd?: () => void;
 }
 
 interface StaticFrameProps {
@@ -82,6 +90,8 @@ export function TrimTimeline(props: TrimTimelineProps) {
               secToPx={secToPx}
               pxToSec={pxToSec}
               onChange={props.onChange}
+              playbackTime={props.playbackTime}
+              onDragEnd={props.onDragEnd}
             />
           ) : (
             <Playhead
@@ -94,11 +104,11 @@ export function TrimTimeline(props: TrimTimelineProps) {
             />
           ))}
       </View>
-      <ThemedText type="small" themeColor="textSecondary" style={styles.hint}>
+      <Text style={styles.hint}>
         {props.mode === 'animated'
           ? `${(props.end - props.start).toFixed(1)}s seleccionados (máx. ${props.maxClipSeconds}s)`
           : `Cuadro en ${props.frameAt.toFixed(1)}s`}
-      </ThemedText>
+      </Text>
     </View>
   );
 }
@@ -113,6 +123,8 @@ function RangeHandles({
   secToPx,
   pxToSec,
   onChange,
+  playbackTime,
+  onDragEnd,
 }: {
   usableWidth: number;
   start: number;
@@ -123,6 +135,8 @@ function RangeHandles({
   secToPx: (s: number) => number;
   pxToSec: (p: number) => number;
   onChange: (start: number, end: number) => void;
+  playbackTime?: SharedValue<number>;
+  onDragEnd?: () => void;
 }) {
   const startX = useSharedValue(secToPx(start));
   const endX = useSharedValue(secToPx(end));
@@ -136,19 +150,25 @@ function RangeHandles({
     [onChange, pxToSec],
   );
 
-  const startGesture = Gesture.Pan().onChange((e) => {
-    const min = Math.max(0, endX.value - maxGapPx);
-    const max = endX.value - minGapPx;
-    startX.value = clamp(startX.value + e.changeX, min, max);
-    runOnJS(commit)(startX.value, endX.value);
-  });
+  const notifyDragEnd = useCallback(() => onDragEnd?.(), [onDragEnd]);
 
-  const endGesture = Gesture.Pan().onChange((e) => {
-    const min = startX.value + minGapPx;
-    const max = Math.min(usableWidth, startX.value + maxGapPx);
-    endX.value = clamp(endX.value + e.changeX, min, max);
-    runOnJS(commit)(startX.value, endX.value);
-  });
+  const startGesture = Gesture.Pan()
+    .onChange((e) => {
+      const min = Math.max(0, endX.value - maxGapPx);
+      const max = endX.value - minGapPx;
+      startX.value = clamp(startX.value + e.changeX, min, max);
+      runOnJS(commit)(startX.value, endX.value);
+    })
+    .onEnd(() => runOnJS(notifyDragEnd)());
+
+  const endGesture = Gesture.Pan()
+    .onChange((e) => {
+      const min = startX.value + minGapPx;
+      const max = Math.min(usableWidth, startX.value + maxGapPx);
+      endX.value = clamp(endX.value + e.changeX, min, max);
+      runOnJS(commit)(startX.value, endX.value);
+    })
+    .onEnd(() => runOnJS(notifyDragEnd)());
 
   const startHandleStyle = useAnimatedStyle(() => ({ transform: [{ translateX: startX.value }] }));
   const endHandleStyle = useAnimatedStyle(() => ({ transform: [{ translateX: endX.value }] }));
@@ -157,9 +177,22 @@ function RangeHandles({
     width: Math.max(0, endX.value - startX.value),
   }));
 
+  // Moving line showing where playback currently is inside the selection.
+  // Clamped to [startX, endX] so a stale event just after the trim range
+  // changed doesn't flash the line outside the selection for a frame.
+  const playbackStyle = useAnimatedStyle(() => {
+    if (!playbackTime || durationSec <= 0) return { opacity: 0 };
+    const px = (playbackTime.value / durationSec) * usableWidth;
+    return {
+      opacity: 1,
+      transform: [{ translateX: HANDLE_WIDTH / 2 + clamp(px, startX.value, endX.value) }],
+    };
+  });
+
   return (
     <>
       <Animated.View pointerEvents="none" style={[styles.selection, selectionStyle]} />
+      <Animated.View pointerEvents="none" style={[styles.playbackLine, playbackStyle]} />
       <GestureDetector gesture={startGesture}>
         <Animated.View style={[styles.handle, startHandleStyle]} />
       </GestureDetector>
@@ -209,14 +242,16 @@ const styles = StyleSheet.create({
     height: TRACK_HEIGHT,
     borderRadius: Spacing.two,
     overflow: 'hidden',
-    backgroundColor: '#00000022',
+    backgroundColor: Kiosk.inset,
+    borderWidth: 1,
+    borderColor: Kiosk.border,
   },
   selection: {
     position: 'absolute',
     top: 0,
     bottom: 0,
-    backgroundColor: '#3c87f755',
-    borderColor: '#3c87f7',
+    backgroundColor: 'rgba(194, 231, 218, 0.22)',
+    borderColor: Kiosk.accent,
     borderTopWidth: 3,
     borderBottomWidth: 3,
     minWidth: MIN_STATIC_GAP_PX,
@@ -227,16 +262,31 @@ const styles = StyleSheet.create({
     bottom: 0,
     width: HANDLE_WIDTH,
     borderRadius: Spacing.one,
-    backgroundColor: '#3c87f7',
+    backgroundColor: Kiosk.accent,
     borderWidth: 2,
-    borderColor: '#ffffff',
+    borderColor: Kiosk.onAccent,
+  },
+  playbackLine: {
+    position: 'absolute',
+    top: -4,
+    bottom: -4,
+    width: 3,
+    marginLeft: -1.5,
+    borderRadius: 2,
+    backgroundColor: Kiosk.text,
+    shadowColor: Kiosk.accent,
+    shadowOpacity: 0.9,
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 0 },
   },
   playhead: {
     width: 4,
     marginLeft: HANDLE_WIDTH / 2 - 2,
-    backgroundColor: '#ff3b30',
+    backgroundColor: Kiosk.accent,
   },
   hint: {
     textAlign: 'center',
+    fontSize: 13,
+    color: Kiosk.textSecondary,
   },
 });

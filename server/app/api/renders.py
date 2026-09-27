@@ -77,11 +77,19 @@ async def _process_render(
         tray_path = render_dir / "tray.webp"
 
         if body.type == "animated":
-            fit = await fit_animated(source, sticker_path, body.start, end, crop_px, settings)
+            fit = await fit_animated(
+                source, sticker_path, body.start, end, crop_px,
+                metadata["width"], metadata["height"], settings,
+            )
         else:
-            fit = await fit_static(source, sticker_path, frame_at, crop_px, settings)
+            fit = await fit_static(
+                source, sticker_path, frame_at, crop_px,
+                metadata["width"], metadata["height"], settings,
+            )
 
-        await render_tray_icon(source, tray_path, frame_at, crop_px, settings)
+        await render_tray_icon(
+            source, tray_path, frame_at, crop_px, metadata["width"], metadata["height"], settings,
+        )
 
         await store.update_render(
             render_id,

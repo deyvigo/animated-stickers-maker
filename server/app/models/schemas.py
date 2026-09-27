@@ -69,13 +69,19 @@ class JobResponse(BaseModel):
 
 
 class CropRect(BaseModel):
-    """Normalized crop rectangle, all values in [0, 1] relative to the
-    original video's width/height. The backend converts to pixels."""
+    """Normalized crop rectangle relative to the original video's
+    width/height. Usually within [0, 1], but the editor's zoom/pan UI can
+    legitimately produce a crop that extends outside the source frame (e.g.
+    the default "whole video visible" state for a portrait video letterboxed
+    into a square) — the renderer pads those out-of-bounds parts with black
+    rather than rejecting them. Bounds here are just a generous sanity cap
+    (covers any realistic video aspect ratio), not "must be inside the
+    frame"."""
 
-    x: float = Field(ge=0, le=1)
-    y: float = Field(ge=0, le=1)
-    width: float = Field(gt=0, le=1)
-    height: float = Field(gt=0, le=1)
+    x: float = Field(ge=-1.5, le=1.5)
+    y: float = Field(ge=-1.5, le=1.5)
+    width: float = Field(gt=0, le=3)
+    height: float = Field(gt=0, le=3)
 
 
 class CreateRenderRequest(BaseModel):

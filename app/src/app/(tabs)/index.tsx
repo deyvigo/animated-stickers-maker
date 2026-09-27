@@ -1,19 +1,19 @@
 import * as Clipboard from 'expo-clipboard';
 import { router } from 'expo-router';
+import { StatusBar } from 'expo-status-bar';
 import { useEffect, useState } from 'react';
-import {
-  ActivityIndicator,
-  Platform,
-  Pressable,
-  StyleSheet,
-  TextInput,
-} from 'react-native';
+import { Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import Animated, {
+  Easing,
+  useAnimatedStyle,
+  useSharedValue,
+  withRepeat,
+  withSequence,
+  withTiming,
+} from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
-import { BottomTabInset, MaxContentWidth, Spacing } from '@/constants/theme';
-import { useTheme } from '@/hooks/use-theme';
+import { BottomTabInset, Kiosk, MaxContentWidth, Spacing } from '@/constants/theme';
 import { ApiRequestError } from '@/lib/api';
 import { useCreateJob } from '@/lib/queries';
 
@@ -22,8 +22,9 @@ const TIKTOK_URL_PATTERN = /tiktok\.com/i;
 export default function HomeScreen() {
   const [url, setUrl] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const theme = useTheme();
+  const [focused, setFocused] = useState(false);
   const createJob = useCreateJob();
+  const pulse = useSharedValue(1);
 
   // Quality-of-life: if the user copied a TikTok link right before opening
   // the app (the common flow — share sheet doesn't always work, copy does),
@@ -41,6 +42,24 @@ export default function HomeScreen() {
     })();
   }, []);
 
+  // The kiosk sign "warming up": while the job is created, the button
+  // breathes instead of swapping in a generic spinner.
+  useEffect(() => {
+    if (createJob.isPending) {
+      pulse.value = withRepeat(
+        withSequence(
+          withTiming(0.5, { duration: 550, easing: Easing.out(Easing.quad) }),
+          withTiming(1, { duration: 550, easing: Easing.out(Easing.quad) }),
+        ),
+        -1,
+      );
+    } else {
+      pulse.value = withTiming(1, { duration: 200 });
+    }
+  }, [createJob.isPending, pulse]);
+
+  const pulseStyle = useAnimatedStyle(() => ({ opacity: pulse.value }));
+
   const handleSubmit = async () => {
     setError(null);
     const trimmed = url.trim();
@@ -56,59 +75,57 @@ export default function HomeScreen() {
     }
   };
 
+  const idleDisabled = !createJob.isPending && !url.trim();
+
   return (
-    <ThemedView style={styles.container}>
+    <View style={styles.container}>
+      <StatusBar style="light" />
       <SafeAreaView style={styles.safeArea}>
-        <ThemedView style={styles.heroSection}>
-          <ThemedText type="title" style={styles.title}>
-            Stickers desde TikTok
-          </ThemedText>
-          <ThemedText type="small" themeColor="textSecondary" style={styles.subtitle}>
+        <View style={styles.heroSection}>
+          <Text style={styles.title}>Stickers desde TikTok</Text>
+          <Text style={styles.subtitle}>
             Pegá el link de un video, recortalo y generá un sticker animado o de foto para
             WhatsApp.
-          </ThemedText>
-        </ThemedView>
+          </Text>
+        </View>
 
-        <ThemedView type="backgroundElement" style={styles.card}>
+        <View style={styles.card}>
           <TextInput
             value={url}
             onChangeText={setUrl}
+            onFocus={() => setFocused(true)}
+            onBlur={() => setFocused(false)}
             placeholder="https://www.tiktok.com/@usuario/video/..."
-            placeholderTextColor={theme.textSecondary}
+            placeholderTextColor={Kiosk.textSecondary}
             autoCapitalize="none"
             autoCorrect={false}
             keyboardType="url"
-            style={[styles.input, { color: theme.text, borderColor: theme.backgroundSelected }]}
+            style={[styles.input, focused && styles.inputFocused]}
           />
-          {error && (
-            <ThemedText type="small" style={styles.error}>
-              {error}
-            </ThemedText>
-          )}
-          <Pressable
-            onPress={handleSubmit}
-            disabled={createJob.isPending || !url.trim()}
-            style={({ pressed }) => [
-              styles.button,
-              { backgroundColor: theme.text, opacity: pressed || createJob.isPending ? 0.7 : 1 },
-            ]}>
-            {createJob.isPending ? (
-              <ActivityIndicator color={theme.background} />
-            ) : (
-              <ThemedText type="smallBold" themeColor="background">
-                Continuar
-              </ThemedText>
-            )}
-          </Pressable>
-        </ThemedView>
+          {error && <Text style={styles.error}>{error}</Text>}
+          <Animated.View style={pulseStyle}>
+            <Pressable
+              onPress={handleSubmit}
+              disabled={createJob.isPending || !url.trim()}
+              style={({ pressed }) => [
+                styles.button,
+                { opacity: idleDisabled ? 0.4 : pressed ? 0.85 : 1 },
+              ]}>
+              <Text style={styles.buttonLabel}>
+                {createJob.isPending ? 'Conectando…' : 'Continuar'}
+              </Text>
+            </Pressable>
+          </Animated.View>
+        </View>
       </SafeAreaView>
-    </ThemedView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+    backgroundColor: Kiosk.background,
     justifyContent: 'center',
     flexDirection: 'row',
   },
@@ -125,31 +142,54 @@ const styles = StyleSheet.create({
     gap: Spacing.two,
   },
   title: {
-    fontSize: 32,
+    fontSize: 34,
     lineHeight: 38,
+    fontWeight: '700',
+    letterSpacing: -0.5,
+    color: Kiosk.text,
   },
   subtitle: {
-    lineHeight: 20,
+    fontSize: 15,
+    lineHeight: 21,
+    fontWeight: '500',
+    color: Kiosk.textSecondary,
   },
   card: {
-    borderRadius: Spacing.four,
+    backgroundColor: Kiosk.surface,
+    borderWidth: 1,
+    borderColor: Kiosk.border,
+    borderRadius: 20,
     padding: Spacing.four,
     gap: Spacing.three,
   },
   input: {
     borderWidth: 1,
-    borderRadius: Spacing.three,
+    borderColor: Kiosk.border,
+    borderRadius: 12,
     paddingHorizontal: Spacing.three,
-    paddingVertical: Spacing.two,
-    fontSize: 16,
+    paddingVertical: Spacing.three,
+    backgroundColor: Kiosk.inset,
+    fontSize: 15,
+    color: Kiosk.text,
+  },
+  inputFocused: {
+    borderColor: Kiosk.borderFocused,
   },
   button: {
     paddingVertical: Spacing.three,
-    borderRadius: Spacing.three,
+    borderRadius: 14,
     alignItems: 'center',
     justifyContent: 'center',
+    backgroundColor: Kiosk.accent,
+  },
+  buttonLabel: {
+    fontSize: 15,
+    fontWeight: '700',
+    letterSpacing: 0.2,
+    color: Kiosk.onAccent,
   },
   error: {
-    color: '#ff3b30',
+    fontSize: 13,
+    color: Kiosk.error,
   },
 });

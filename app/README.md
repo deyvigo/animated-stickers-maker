@@ -24,8 +24,11 @@ Requiere **dev client** (no funciona en Expo Go) porque incluye un módulo nativ
 
 ```bash
 npm install
+eas init
+eas build:configure
 npx expo prebuild --platform android   # genera android/ a partir de app.config.ts
 eas build --profile development --platform android   # o: npx expo run:android si tenés el SDK de Android local
+eas build --profile development --platform android --local
 ```
 
 Instalá el APK resultante en tu celular, y arrancá el bundler:

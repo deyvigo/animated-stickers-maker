@@ -1,13 +1,19 @@
 import { Image } from 'expo-image';
 import { router, useLocalSearchParams } from 'expo-router';
-import { useState } from 'react';
-import { ActivityIndicator, Alert, Pressable, StyleSheet, TextInput } from 'react-native';
+import { StatusBar } from 'expo-status-bar';
+import { useEffect, useState } from 'react';
+import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import Animated, {
+  Easing,
+  useAnimatedStyle,
+  useSharedValue,
+  withRepeat,
+  withSequence,
+  withTiming,
+} from 'react-native-reanimated';
 
-import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
-import { Spacing } from '@/constants/theme';
-import { useTheme } from '@/hooks/use-theme';
+import { Kiosk, Spacing } from '@/constants/theme';
 import { useAddStickerToPack, useCreatePack, usePacks } from '@/features/packs/usePacks';
 import { WHATSAPP_MAX_EMOJIS_PER_STICKER } from '@/features/packs/types';
 import { absoluteUrl } from '@/lib/api';
@@ -18,7 +24,6 @@ const QUICK_EMOJIS = ['😂', '😍', '🔥', '😢', '😱', '👍', '❤️', 
 export default function PreviewScreen() {
   const { renderId } = useLocalSearchParams<{ renderId: string }>();
   const { data: render } = useRender(renderId);
-  const theme = useTheme();
   const { data: packs = [] } = usePacks();
   const createPack = useCreatePack();
   const addSticker = useAddStickerToPack();
@@ -28,25 +33,42 @@ export default function PreviewScreen() {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
+  // The kiosk sign "warming up" — same motif as every other primary action.
+  const pulse = useSharedValue(1);
+  useEffect(() => {
+    if (saving) {
+      pulse.value = withRepeat(
+        withSequence(
+          withTiming(0.5, { duration: 550, easing: Easing.out(Easing.quad) }),
+          withTiming(1, { duration: 550, easing: Easing.out(Easing.quad) }),
+        ),
+        -1,
+      );
+    } else {
+      pulse.value = withTiming(1, { duration: 200 });
+    }
+  }, [saving, pulse]);
+  const pulseStyle = useAnimatedStyle(() => ({ opacity: pulse.value }));
+
   if (!render || render.status === 'failed') {
     return (
-      <ThemedView style={styles.center}>
-        <ThemedText type="small">{render?.error?.message ?? 'No se pudo generar el sticker.'}</ThemedText>
+      <View style={[styles.container, styles.center]}>
+        <StatusBar style="light" />
+        <Text style={styles.errorText}>{render?.error?.message ?? 'No se pudo generar el sticker.'}</Text>
         <Pressable onPress={() => router.back()} style={styles.retryButton}>
-          <ThemedText type="link">Volver a intentar</ThemedText>
+          <Text style={styles.retryButtonLabel}>Volver a intentar</Text>
         </Pressable>
-      </ThemedView>
+      </View>
     );
   }
 
   if (render.status !== 'ready') {
     return (
-      <ThemedView style={styles.center}>
-        <ActivityIndicator />
-        <ThemedText type="small" themeColor="textSecondary">
-          Generando sticker…
-        </ThemedText>
-      </ThemedView>
+      <View style={[styles.container, styles.center]}>
+        <StatusBar style="light" />
+        <ActivityIndicator color={Kiosk.accent} />
+        <Text style={styles.statusText}>Generando sticker…</Text>
+      </View>
     );
   }
 
@@ -93,46 +115,42 @@ export default function PreviewScreen() {
   };
 
   return (
-    <ThemedView style={styles.container}>
+    <View style={styles.container}>
+      <StatusBar style="light" />
       <SafeAreaView style={styles.safeArea} edges={['bottom']}>
-        <ThemedView style={styles.previewBox}>
+        <View style={styles.previewBox}>
           {render.sticker_url && (
             <Image source={{ uri: absoluteUrl(render.sticker_url) ?? undefined }} style={styles.sticker} contentFit="contain" />
           )}
-        </ThemedView>
+        </View>
 
-        <ThemedText type="small" themeColor="textSecondary" style={styles.centerText}>
+        <Text style={styles.centerText}>
           {((render.bytes ?? 0) / 1024).toFixed(0)} KB
           {render.fit?.degraded ? ' · calidad reducida para cumplir el límite de WhatsApp' : ''}
-        </ThemedText>
+        </Text>
 
         {saved ? (
-          <ThemedView type="backgroundElement" style={styles.savedCard}>
-            <ThemedText type="smallBold">¡Guardado en el pack!</ThemedText>
+          <View style={styles.savedCard}>
+            <Text style={styles.savedText}>¡Guardado en el pack!</Text>
             <Pressable onPress={() => router.dismissTo('/packs')}>
-              <ThemedText type="linkPrimary">Ir a Mis packs</ThemedText>
+              <Text style={styles.savedLink}>Ir a Mis packs</Text>
             </Pressable>
-          </ThemedView>
+          </View>
         ) : (
           <>
-            <ThemedText type="small">Emojis (hasta 3)</ThemedText>
-            <ThemedView style={styles.emojiRow}>
+            <Text style={styles.label}>Emojis (hasta 3)</Text>
+            <View style={styles.emojiRow}>
               {QUICK_EMOJIS.map((emoji) => (
                 <Pressable
                   key={emoji}
                   onPress={() => toggleEmoji(emoji)}
-                  style={[
-                    styles.emojiButton,
-                    { backgroundColor: emojis.includes(emoji) ? theme.backgroundSelected : 'transparent' },
-                  ]}>
-                  <ThemedText type="title" style={styles.emojiText}>
-                    {emoji}
-                  </ThemedText>
+                  style={[styles.emojiButton, emojis.includes(emoji) && styles.emojiButtonSelected]}>
+                  <Text style={styles.emojiText}>{emoji}</Text>
                 </Pressable>
               ))}
-            </ThemedView>
+            </View>
 
-            <ThemedText type="small">Guardar en un pack</ThemedText>
+            <Text style={styles.label}>Guardar en un pack</Text>
             {compatiblePacks.map((pack) => (
               <Pressable
                 key={pack.identifier}
@@ -142,75 +160,99 @@ export default function PreviewScreen() {
                   styles.packRow,
                   { opacity: pressed || saving ? 0.7 : 1 },
                 ]}>
-                <ThemedText>{pack.name}</ThemedText>
-                <ThemedText themeColor="textSecondary">{pack.stickers.length}/30</ThemedText>
+                <Text style={styles.packRowName}>{pack.name}</Text>
+                <Text style={styles.packRowCount}>{pack.stickers.length}/30</Text>
               </Pressable>
             ))}
 
-            <ThemedView style={styles.newPackRow}>
+            <View style={styles.newPackRow}>
               <TextInput
                 value={newPackName}
                 onChangeText={setNewPackName}
                 placeholder="Nombre de un pack nuevo"
-                placeholderTextColor={theme.textSecondary}
-                style={[styles.input, { color: theme.text, borderColor: theme.backgroundSelected }]}
+                placeholderTextColor={Kiosk.textSecondary}
+                style={styles.input}
               />
-              <Pressable
-                onPress={createAndSave}
-                disabled={saving}
-                style={[styles.createButton, { backgroundColor: theme.text, opacity: saving ? 0.7 : 1 }]}>
-                <ThemedText type="smallBold" themeColor="background">
-                  Crear
-                </ThemedText>
-              </Pressable>
-            </ThemedView>
+              <Animated.View style={pulseStyle}>
+                <Pressable
+                  onPress={createAndSave}
+                  disabled={saving}
+                  style={({ pressed }) => [styles.createButton, { opacity: pressed ? 0.85 : 1 }]}>
+                  <Text style={styles.createButtonLabel}>Crear</Text>
+                </Pressable>
+              </Animated.View>
+            </View>
           </>
         )}
       </SafeAreaView>
-    </ThemedView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1 },
+  container: { flex: 1, backgroundColor: Kiosk.background },
   safeArea: { flex: 1, padding: Spacing.three, gap: Spacing.three },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: Spacing.two, padding: Spacing.four },
-  centerText: { textAlign: 'center' },
+  centerText: { textAlign: 'center', fontSize: 13, color: Kiosk.textSecondary },
+  statusText: { fontSize: 14, color: Kiosk.textSecondary },
+  errorText: { fontSize: 14, color: Kiosk.error, textAlign: 'center' },
   previewBox: {
     aspectRatio: 1,
     borderRadius: Spacing.three,
     overflow: 'hidden',
-    // Simple checkerboard-ish neutral backdrop so a transparent sticker
-    // (any static/animated webp with alpha) is visible against something.
-    backgroundColor: '#80808022',
+    backgroundColor: Kiosk.surface,
+    borderWidth: 1,
+    borderColor: Kiosk.border,
     alignItems: 'center',
     justifyContent: 'center',
   },
   sticker: { width: '80%', height: '80%' },
+  label: { fontSize: 14, fontWeight: '600', color: Kiosk.text },
   emojiRow: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.one },
   emojiButton: { padding: Spacing.one, borderRadius: Spacing.two },
+  emojiButtonSelected: { backgroundColor: Kiosk.accent },
   emojiText: { fontSize: 28, lineHeight: 34 },
   packRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     paddingVertical: Spacing.two,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#80808044',
+    borderBottomColor: Kiosk.border,
   },
+  packRowName: { fontSize: 15, color: Kiosk.text },
+  packRowCount: { fontSize: 13, color: Kiosk.textSecondary },
   newPackRow: { flexDirection: 'row', gap: Spacing.two, marginTop: Spacing.one },
   input: {
     flex: 1,
     borderWidth: 1,
-    borderRadius: Spacing.two,
+    borderColor: Kiosk.border,
+    borderRadius: 12,
     paddingHorizontal: Spacing.three,
     paddingVertical: Spacing.two,
+    backgroundColor: Kiosk.inset,
+    fontSize: 15,
+    color: Kiosk.text,
   },
   createButton: {
     paddingHorizontal: Spacing.four,
-    borderRadius: Spacing.two,
+    paddingVertical: Spacing.two,
+    borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
+    backgroundColor: Kiosk.accent,
   },
-  savedCard: { padding: Spacing.four, borderRadius: Spacing.three, gap: Spacing.two, alignItems: 'center' },
+  createButtonLabel: { fontSize: 14, fontWeight: '700', color: Kiosk.onAccent },
+  savedCard: {
+    padding: Spacing.four,
+    borderRadius: 20,
+    gap: Spacing.two,
+    alignItems: 'center',
+    backgroundColor: Kiosk.surface,
+    borderWidth: 1,
+    borderColor: Kiosk.border,
+  },
+  savedText: { fontSize: 15, fontWeight: '700', color: Kiosk.text },
+  savedLink: { fontSize: 14, fontWeight: '700', color: Kiosk.accent },
   retryButton: { marginTop: Spacing.two },
+  retryButtonLabel: { fontSize: 14, fontWeight: '600', color: Kiosk.accent },
 });

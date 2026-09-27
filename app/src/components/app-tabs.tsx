@@ -1,21 +1,24 @@
 import { NativeTabs } from 'expo-router/unstable-native-tabs';
-import { useColorScheme } from 'react-native';
 
-import { Colors } from '@/constants/theme';
+import { Kiosk } from '@/constants/theme';
 
 export default function AppTabs() {
-  const scheme = useColorScheme();
-  const colors = Colors[scheme === 'unspecified' ? 'light' : scheme];
-
   return (
     <NativeTabs
-      backgroundColor={colors.background}
-      indicatorColor={colors.backgroundElement}
-      labelStyle={{ selected: { color: colors.text } }}>
+      backgroundColor={Kiosk.background}
+      indicatorColor={Kiosk.border}
+      iconColor={{ default: Kiosk.textSecondary, selected: Kiosk.accent }}
+      labelStyle={{
+        default: { color: Kiosk.textSecondary },
+        selected: { color: Kiosk.accent },
+      }}>
       <NativeTabs.Trigger name="index">
         <NativeTabs.Trigger.Label>Nuevo</NativeTabs.Trigger.Label>
         <NativeTabs.Trigger.Icon
-          src={require('@/assets/images/tabIcons/home.png')}
+          src={{
+            default: require('@/assets/images/tabIcons/new.png'),
+            selected: require('@/assets/images/tabIcons/new-filled.png'),
+          }}
           renderingMode="template"
         />
       </NativeTabs.Trigger>
@@ -23,7 +26,10 @@ export default function AppTabs() {
       <NativeTabs.Trigger name="packs">
         <NativeTabs.Trigger.Label>Mis packs</NativeTabs.Trigger.Label>
         <NativeTabs.Trigger.Icon
-          src={require('@/assets/images/tabIcons/explore.png')}
+          src={{
+            default: require('@/assets/images/tabIcons/packs.png'),
+            selected: require('@/assets/images/tabIcons/packs-filled.png'),
+          }}
           renderingMode="template"
         />
       </NativeTabs.Trigger>
