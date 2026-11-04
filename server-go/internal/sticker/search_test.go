@@ -9,10 +9,10 @@ import (
 const budget = 500 * 1024
 
 // model returns a monotonic fake size: bytes grow with fps, duration and
-// quality, like the real encoder.
+// quality and shrink with blur, like the real encoder.
 func model(dur float64) Encoder {
 	return func(_ context.Context, a Attempt) (int64, error) {
-		return int64(float64(a.FPS) * dur * float64(200+60*a.Quality)), nil
+		return int64(float64(a.FPS) * dur * float64(200+60*a.Quality) * blurSizeFactor(a.Blur)), nil
 	}
 }
 
@@ -20,44 +20,48 @@ func counting(e Encoder, n *int) Encoder {
 	return func(ctx context.Context, a Attempt) (int64, error) { *n++; return e(ctx, a) }
 }
 
-func TestShortClipKeepsTopFPSAndMaxQuality(t *testing.T) {
+func TestShortClipKeepsTopFPSNoBlurMaxQuality(t *testing.T) {
 	var n int
 	best, err := Search(context.Background(), DefaultPolicy, budget, counting(model(2), &n))
 	if err != nil || best == nil {
 		t.Fatalf("best=%v err=%v", best, err)
 	}
-	if *best != (Attempt{15, 90}) {
-		t.Fatalf("best = %+v, want 15fps q90", *best)
+	if *best != (Attempt{15, 0, 90}) {
+		t.Fatalf("best = %+v, want 15fps no blur q90", *best)
 	}
 	if n != 2 {
 		t.Errorf("encodes = %d, want 2", n)
 	}
 }
 
-func TestLongClipTradesFPSNotQuality(t *testing.T) {
-	var n int
-	best, err := Search(context.Background(), DefaultPolicy, budget, counting(model(10), &n))
+func TestHeavyClipPrefersBlurOverLosingFPS(t *testing.T) {
+	// The model's "duration" is just a size scale. Pick one where 15fps
+	// without blur doesn't fit at the floor, but blur recovers it before
+	// any fps is given up.
+	dur := 10.5
+	enc := model(dur)
+	if s, _ := enc(context.Background(), Attempt{15, 0, 55}); s <= budget {
+		t.Fatalf("test premise broken: 15fps/no blur already fits (%d)", s)
+	}
+	if s, _ := enc(context.Background(), Attempt{15, 1.0, 55}); s > budget {
+		t.Fatalf("test premise broken: 15fps/blur 1.0 doesn't fit (%d)", s)
+	}
+	best, err := Search(context.Background(), DefaultPolicy, budget, enc)
 	if err != nil || best == nil {
-		t.Fatalf("best=%v err=%v", best, err)
+		t.Fatal(err)
 	}
-	if best.FPS >= 15 {
-		t.Errorf("expected fps reduction, got %+v", *best)
-	}
-	if best.Quality < DefaultPolicy.QFloor {
-		t.Errorf("quality %d below floor", best.Quality)
-	}
-	if n > 10 {
-		t.Errorf("too many encodes: %d", n)
+	if best.FPS != 15 || best.Blur == 0 || best.Quality < DefaultPolicy.QFloor {
+		t.Fatalf("best = %+v, want 15fps with some blur and q>=floor", *best)
 	}
 }
 
-// For many durations: the result must fit, and nothing better may fit —
-// no higher fps at the floor quality, and no more than 2 quality steps
-// left on the table at the chosen fps.
+// For many durations: the result must fit, nothing preferred may fit at the
+// floor quality, and no more than 2 quality steps may be left on the table.
 func TestSearchIsNearOptimal(t *testing.T) {
-	for dur := 1.0; dur <= 10; dur += 0.5 {
+	p := DefaultPolicy
+	for dur := 0.5; dur <= 10; dur += 0.5 {
 		enc := model(dur)
-		best, err := Search(context.Background(), DefaultPolicy, budget, enc)
+		best, err := Search(context.Background(), p, budget, enc)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -67,32 +71,47 @@ func TestSearchIsNearOptimal(t *testing.T) {
 		if size, _ := enc(context.Background(), *best); size > budget {
 			t.Errorf("dur %.1f: %+v is %d bytes, over budget", dur, *best, size)
 		}
-		for _, fps := range DefaultPolicy.FPSLadder {
-			if fps > best.FPS {
-				if size, _ := enc(context.Background(), Attempt{fps, DefaultPolicy.QFloor}); size <= budget {
-					t.Errorf("dur %.1f: %dfps fits at floor but chose %+v", dur, fps, *best)
+		for _, c := range p.candidates() {
+			a := Attempt{c.fps, c.blur, p.QFloor}
+			if better(a, *best) && a.Quality == p.QFloor && (a.FPS != best.FPS || a.Blur != best.Blur) {
+				if size, _ := enc(context.Background(), a); size <= budget {
+					t.Errorf("dur %.1f: %+v fits at the floor but chose %+v", dur, a, *best)
 				}
 			}
 		}
-		if best.Quality < DefaultPolicy.QMax {
-			if size, _ := enc(context.Background(), Attempt{best.FPS, best.Quality + 3}); size <= budget {
+		if best.Quality < p.QMax {
+			up := *best
+			up.Quality += 3
+			if size, _ := enc(context.Background(), up); size <= budget {
 				t.Errorf("dur %.1f: q+3 would fit at %+v", dur, *best)
 			}
 		}
 	}
 }
 
-func TestFallbackBelowFloorAtLowestFPS(t *testing.T) {
-	// Only fits at 5fps and quality below the floor.
+func TestEncodeCountStaysBounded(t *testing.T) {
+	for dur := 0.5; dur <= 10; dur += 0.5 {
+		var n int
+		if _, err := Search(context.Background(), DefaultPolicy, budget, counting(model(dur), &n)); err != nil {
+			t.Fatal(err)
+		}
+		if n > 14 {
+			t.Errorf("dur %.1f: %d encodes", dur, n)
+		}
+	}
+}
+
+func TestFallbackBelowFloorOnLastCandidate(t *testing.T) {
 	enc := func(_ context.Context, a Attempt) (int64, error) {
 		return int64(a.FPS*100000) + int64(a.Quality)*1000, nil
 	}
-	// 5fps: 500000 + q*1000 <= 512000 -> q <= 12 ... widen budget instead.
 	best, err := Search(context.Background(), DefaultPolicy, 500000+50*1000, enc)
 	if err != nil || best == nil {
 		t.Fatalf("best=%v err=%v", best, err)
 	}
-	if best.FPS != 5 || best.Quality >= DefaultPolicy.QFloor || best.Quality < DefaultPolicy.QFallbackMin {
+	last := Attempt{FPS: 5, Blur: 1.0}
+	if best.FPS != last.FPS || best.Blur != last.Blur ||
+		best.Quality >= DefaultPolicy.QFloor || best.Quality < DefaultPolicy.QFallbackMin {
 		t.Fatalf("best = %+v", *best)
 	}
 }

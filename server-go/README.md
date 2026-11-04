@@ -40,12 +40,28 @@ Environment variables or a `.env` file (see `.env.example`). Notable ones:
 
 ## How animated stickers fit the 500 KB budget
 
-Animated WebP has no inter-frame prediction, so size ≈ frames × bytes per frame. For long
-clips the encoder can't keep both high fps and good quality. `internal/sticker/search.go`
-searches for the best combination instead of walking a fixed ladder: it keeps the highest fps
-that stays at or above a quality floor (`QFloor`, 55), then spends the remaining budget on
-quality. Long clips therefore get fewer fps rather than blocky frames. Tune `DefaultPolicy`
-to trade smoothness for sharpness.
+Animated WebP has no inter-frame prediction, so size ≈ frames × bytes per frame. Heavy footage
+(fur, water, camera motion) can't keep both a high fps and a good quantizer in 500 KB, and below
+about q=50 libwebp shows flat blocky patches. `internal/sticker/search.go` therefore spends the
+budget in this order: quality (never below `QFloor`, 55), then a light gaussian pre-blur
+(σ 0 → 0.6 → 1.0), and only then frame rate (15 → 12 → 10 → 8 → 6 → 5 fps). Within a candidate
+it binary-searches the highest quality that still fits. Typical cost is 2–10 ffmpeg runs.
+
+The `fit` field of a render response reports what it chose (`fps`, `quality`, `blur`,
+`duration`). Tune `DefaultPolicy` to trade softness for fps: `Blurs` (e.g. add `1.4` for more
+fps on very heavy clips, or leave only `0` to never soften) and `QFloor`.
+
+### Letterbox bars
+
+When the crop leaves areas of the 512×512 canvas empty (a portrait video shown whole, or a
+crop reaching outside the frame), `PADDING_FILL` decides what goes there:
+
+- `blur` (default): a blurred, darkened copy of the video, like TikTok. Opaque.
+- `transparent`: a clean cutout. Real transparency makes libwebp spend about a third more bytes
+  on the same frame, which on heavy clips costs several fps.
+
+On a real 5 s clip shown whole (heavy CGI footage) this moved the result from 6 fps / q74 to
+15 fps / q65 with a light blur, at the same ~490 KB.
 
 ## Layout
 

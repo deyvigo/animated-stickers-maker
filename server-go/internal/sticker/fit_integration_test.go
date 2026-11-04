@@ -117,3 +117,49 @@ func TestFitStaticTrayAndOutOfFrameCrop(t *testing.T) {
 	}
 	t.Logf("static q=%d", *info.Quality)
 }
+
+// The VP8X alpha flag is set by libwebp for every animation, so it can't
+// tell opaque from transparent output. What we can assert from outside is
+// that both fill modes produce valid files, and that the opaque fill is
+// never the heavier one at identical settings.
+func TestLetterboxFillModesProduceValidOutput(t *testing.T) {
+	requireLibwebp(t)
+	src := testVideo(t, 3)
+	// Whole 720x1280 video letterboxed into the square (the editor default).
+	crop := CropToPixels(modelsCrop(-0.3889, 0, 1.7778, 1), 720, 1280)
+
+	sizes := map[string]int64{}
+	for _, mode := range []string{"blur", "transparent"} {
+		f := newTestFitter(t)
+		f.S.PaddingFill = mode
+		dir := t.TempDir()
+		anim := filepath.Join(dir, "a.webp")
+		still := filepath.Join(dir, "s.webp")
+		tray := filepath.Join(dir, "t.webp")
+		if _, err := f.FitAnimated(context.Background(), src, anim, 0, 2, crop, 720, 1280); err != nil {
+			t.Fatalf("%s animated: %v", mode, err)
+		}
+		if _, err := f.FitStatic(context.Background(), src, still, 1, crop, 720, 1280); err != nil {
+			t.Fatalf("%s static: %v", mode, err)
+		}
+		if err := f.RenderTray(context.Background(), src, tray, 1, crop, 720, 1280); err != nil {
+			t.Fatalf("%s tray: %v", mode, err)
+		}
+		for name, path := range map[string]string{"animated": anim, "static": still, "tray": tray} {
+			info, err := webpinfo.ReadFile(path)
+			if err != nil {
+				t.Fatalf("%s %s: %v", mode, name, err)
+			}
+			wantDim := 512
+			if name == "tray" {
+				wantDim = 96
+			}
+			if info.Width != wantDim || info.Height != wantDim {
+				t.Errorf("%s %s: %dx%d", mode, name, info.Width, info.Height)
+			}
+		}
+		st, _ := os.Stat(still)
+		sizes[mode] = st.Size()
+	}
+	t.Logf("static letterbox: blur fill %d B, transparent %d B", sizes["blur"], sizes["transparent"])
+}

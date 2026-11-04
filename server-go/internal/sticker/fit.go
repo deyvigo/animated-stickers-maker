@@ -50,6 +50,10 @@ func NewFitter(s config.Settings) *Fitter {
 	return &Fitter{S: s, Policy: DefaultPolicy}
 }
 
+func (f *Fitter) filterOpts(fps int, blur float64) FilterOpts {
+	return FilterOpts{FPS: fps, Blur: blur, Fill: PaddingFill(f.S.PaddingFill)}
+}
+
 func sibling(out, tag string) string {
 	return strings.TrimSuffix(out, ".webp") + "." + tag + ".webp"
 }
@@ -128,7 +132,7 @@ func (f *Fitter) FitAnimated(ctx context.Context, source, out string, start, end
 	for attempt := 0; attempt <= maxDurationRetries; attempt++ {
 		var bestAttempt Attempt
 		enc := func(ctx context.Context, a Attempt) (int64, error) {
-			vf := CropFilter(crop, srcW, srcH, f.S.StickerDimension, a.FPS)
+			vf := CropFilter(crop, srcW, srcH, f.S.StickerDimension, f.filterOpts(a.FPS, a.Blur))
 			if err := media.RunFFmpeg(ctx, f.S.FFmpegTimeout, renderMsgs,
 				f.animatedArgs(source, bf.try, start, duration, vf, a.Quality)...); err != nil {
 				return 0, err
@@ -157,12 +161,14 @@ func (f *Fitter) FitAnimated(ctx context.Context, source, out string, start, end
 			if err := f.validate(out, true); err != nil {
 				return models.RenderFitInfo{}, err
 			}
-			fps, q, dur := float64(best.FPS), best.Quality, duration
+			fps, q, dur, blur := float64(best.FPS), best.Quality, duration, best.Blur
 			info := models.RenderFitInfo{
 				FPS:      &fps,
 				Quality:  &q,
+				Blur:     &blur,
 				Duration: &dur,
-				Degraded: best.FPS < degradedAnimatedFPS || best.Quality < f.Policy.QFloor || attempt > 0,
+				Degraded: best.FPS < degradedAnimatedFPS || best.Quality < f.Policy.QFloor ||
+					best.Blur > 0 || attempt > 0,
 			}
 			if attempt > 0 {
 				note := fmt.Sprintf("duración recortada a %.1fs", duration)
@@ -227,7 +233,7 @@ func (f *Fitter) fitStill(ctx context.Context, source, out string, frameAt float
 func (f *Fitter) FitStatic(ctx context.Context, source, out string, frameAt float64,
 	crop CropPixels, srcW, srcH int) (models.RenderFitInfo, error) {
 
-	vf := CropFilter(crop, srcW, srcH, f.S.StickerDimension, 0)
+	vf := CropFilter(crop, srcW, srcH, f.S.StickerDimension, f.filterOpts(0, 0))
 	q, err := f.fitStill(ctx, source, out, frameAt, vf, f.S.StaticMaxBytes)
 	if err != nil {
 		return models.RenderFitInfo{}, err
@@ -247,7 +253,7 @@ func (f *Fitter) FitStatic(ctx context.Context, source, out string, frameAt floa
 func (f *Fitter) RenderTray(ctx context.Context, source, out string, frameAt float64,
 	crop CropPixels, srcW, srcH int) error {
 
-	vf := CropFilter(crop, srcW, srcH, f.S.TrayDimension, 0)
+	vf := CropFilter(crop, srcW, srcH, f.S.TrayDimension, f.filterOpts(0, 0))
 	q, err := f.fitStill(ctx, source, out, frameAt, vf, f.S.TrayMaxBytes)
 	if err != nil {
 		return err

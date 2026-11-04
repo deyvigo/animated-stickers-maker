@@ -5,6 +5,7 @@ package sticker
 
 import (
 	"fmt"
+	"math"
 	"strings"
 
 	"stickers-server/internal/models"
@@ -37,9 +38,47 @@ func CropToPixels(c models.CropRect, srcW, srcH int) CropPixels {
 	}
 }
 
-// CropFilter builds the ffmpeg -vf chain: optional pad (when the crop
-// leaves the frame), crop, optional fps, then scale+pad to a square.
-func CropFilter(c CropPixels, srcW, srcH, dimension int, fps int) string {
+// PaddingFill says what goes in the areas of the square canvas that the
+// video doesn't cover (letterbox bars, or a crop reaching outside the frame).
+type PaddingFill string
+
+const (
+	// FillBlur fills them with a heavily blurred copy of the video itself
+	// (the TikTok look). It is opaque, which matters: real transparency
+	// makes libwebp spend roughly a third more bytes on the same frame,
+	// costing several fps inside the 500KB budget.
+	FillBlur PaddingFill = "blur"
+	// FillTransparent leaves them transparent: a clean cutout on the chat
+	// background, at the price of fewer fps.
+	FillTransparent PaddingFill = "transparent"
+)
+
+// FilterOpts parameterizes CropFilter.
+type FilterOpts struct {
+	FPS  int         // 0 = keep the source frame rate (stills)
+	Blur float64     // gaussian sigma applied to the final frame, 0 = none
+	Fill PaddingFill // "" is treated as FillTransparent
+}
+
+// CropFilter builds the ffmpeg -vf graph that turns the crop into a
+// dimension x dimension frame.
+func CropFilter(c CropPixels, srcW, srcH, dimension int, o FilterOpts) string {
+	var vf string
+	if o.Fill == FillBlur {
+		vf = blurFillFilter(c, srcW, srcH, dimension, o.FPS)
+	}
+	if vf == "" {
+		vf = transparentFilter(c, srcW, srcH, dimension, o.FPS)
+	}
+	if o.Blur > 0 {
+		vf += fmt.Sprintf(",gblur=sigma=%.2f", o.Blur)
+	}
+	return vf
+}
+
+// transparentFilter: optional pad (when the crop leaves the frame), crop,
+// optional fps, then scale+pad to a square, padding with transparency.
+func transparentFilter(c CropPixels, srcW, srcH, dimension, fps int) string {
 	// ffmpeg's crop can't read pixels that don't exist, so when the crop
 	// leaves the frame we first pad the source out to a big-enough
 	// transparent canvas and shift the crop origin to match. When the crop
@@ -70,4 +109,49 @@ func CropFilter(c CropPixels, srcW, srcH, dimension int, fps int) string {
 		fmt.Sprintf("pad=%d:%d:(ow-iw)/2:(oh-ih)/2:color=#00000000", dimension, dimension),
 	)
 	return strings.Join(parts, ",")
+}
+
+// blurFillFilter composes the visible part of the crop over a blurred,
+// darkened, cover-scaled copy of itself. It returns "" when no fill is
+// needed (the video already covers the whole canvas) or when the crop
+// doesn't touch the frame at all; the caller then uses the plain chain.
+func blurFillFilter(c CropPixels, srcW, srcH, dim, fps int) string {
+	// The canvas shows the crop scaled by s, centered (same geometry as
+	// the transparent chain's scale + pad).
+	s := math.Min(float64(dim)/float64(c.Width), float64(dim)/float64(c.Height))
+
+	// Only the part of the crop inside the source frame has pixels.
+	ix0, iy0 := max(c.X, 0), max(c.Y, 0)
+	ix1, iy1 := min(c.X+c.Width, srcW), min(c.Y+c.Height, srcH)
+	iw, ih := ix1-ix0, iy1-iy0
+	if iw <= 0 || ih <= 0 {
+		return ""
+	}
+
+	fw := min(dim, max(2, int(math.Round(float64(iw)*s))))
+	fh := min(dim, max(2, int(math.Round(float64(ih)*s))))
+	// Even offsets keep yuv420 chroma aligned in overlay.
+	x := int(math.Round((float64(dim)-float64(c.Width)*s)/2+float64(ix0-c.X)*s)) &^ 1
+	y := int(math.Round((float64(dim)-float64(c.Height)*s)/2+float64(iy0-c.Y)*s)) &^ 1
+
+	// Foreground already fills the canvas (±1px of rounding): no bars.
+	if x <= 1 && y <= 1 && x+fw >= dim-1 && y+fh >= dim-1 {
+		return ""
+	}
+
+	// Scale the blur with the canvas so the 96px tray looks like the sticker.
+	sigma := 24.0 * float64(dim) / 512.0
+
+	parts := []string{fmt.Sprintf("crop=%d:%d:%d:%d", iw, ih, ix0, iy0)}
+	if fps > 0 {
+		parts = append(parts, fmt.Sprintf("fps=%d", fps))
+	}
+	graph := strings.Join(parts, ",") +
+		fmt.Sprintf(",split[a][b];"+
+			"[a]scale=%d:%d:force_original_aspect_ratio=increase:flags=bilinear,crop=%d:%d,"+
+			"gblur=sigma=%.2f,eq=brightness=-0.12[bg];"+
+			"[b]scale=%d:%d:flags=lanczos[fg];"+
+			"[bg][fg]overlay=%d:%d,format=yuv420p",
+			dim, dim, dim, dim, sigma, fw, fh, x, y)
+	return graph
 }

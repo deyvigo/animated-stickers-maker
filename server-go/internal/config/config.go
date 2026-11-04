@@ -44,6 +44,10 @@ type Settings struct {
 	TrayMaxBytes     int64
 	MaxClipSeconds   float64
 
+	// PaddingFill is "blur" (opaque blurred-video fill, cheaper in bytes)
+	// or "transparent". See sticker.PaddingFill.
+	PaddingFill string
+
 	Host     string
 	Port     int
 	LogLevel string
@@ -71,6 +75,7 @@ func Default() Settings {
 		TrayDimension:        96,
 		TrayMaxBytes:         50 * 1024,
 		MaxClipSeconds:       10.0,
+		PaddingFill:          "blur",
 		Host:                 "0.0.0.0",
 		Port:                 8000,
 		LogLevel:             "info",
@@ -139,6 +144,7 @@ func LoadFrom(envFile string, lookup LookupFunc) (Settings, error) {
 	str("HOST", &s.Host)
 	str("LOG_LEVEL", &s.LogLevel)
 	str("DOWNLOADER_URL", &s.DownloaderURL)
+	str("PADDING_FILL", &s.PaddingFill)
 	integer("PORT", &s.Port)
 	integer("MAX_CONCURRENT_DOWNLOADS", &s.MaxConcurrentDownloads)
 	integer("MAX_CONCURRENT_RENDERS", &s.MaxConcurrentRenders)
@@ -166,6 +172,9 @@ func LoadFrom(envFile string, lookup LookupFunc) (Settings, error) {
 		}
 	}
 
+	if s.PaddingFill != "blur" && s.PaddingFill != "transparent" {
+		errs = append(errs, `PADDING_FILL must be "blur" or "transparent"`)
+	}
 	if s.MaxConcurrentDownloads < 1 || s.MaxConcurrentRenders < 1 {
 		errs = append(errs, "MAX_CONCURRENT_* must be >= 1")
 	}

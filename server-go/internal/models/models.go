@@ -171,6 +171,7 @@ func (r *CreateRenderRequest) Validate() error {
 type RenderFitInfo struct {
 	FPS      *float64 `json:"fps"`
 	Quality  *int     `json:"quality"`
+	Blur     *float64 `json:"blur"` // pre-encode softening sigma, nil/0 = none
 	Duration *float64 `json:"duration"`
 	Degraded bool     `json:"degraded"`
 	Note     *string  `json:"note"`

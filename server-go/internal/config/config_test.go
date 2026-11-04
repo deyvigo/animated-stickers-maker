@@ -45,3 +45,17 @@ func TestInvalidValue(t *testing.T) {
 		t.Fatal("expected error")
 	}
 }
+
+func TestPaddingFill(t *testing.T) {
+	s, err := LoadFrom("x", env(nil))
+	if err != nil || s.PaddingFill != "blur" {
+		t.Fatalf("default = %q, %v", s.PaddingFill, err)
+	}
+	s, err = LoadFrom("x", env(map[string]string{"PADDING_FILL": "transparent"}))
+	if err != nil || s.PaddingFill != "transparent" {
+		t.Fatalf("override = %q, %v", s.PaddingFill, err)
+	}
+	if _, err := LoadFrom("x", env(map[string]string{"PADDING_FILL": "pink"})); err == nil {
+		t.Fatal("invalid value must be rejected")
+	}
+}
