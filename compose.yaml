@@ -1,0 +1,28 @@
+# Go API + yt-dlp downloader sharing one storage volume.
+# Only the API is published; the downloader is reachable just from the API.
+services:
+  api:
+    build: ./server-go
+    ports:
+      # 0.0.0.0 so a phone on the same Wi-Fi can reach http://<mac-ip>:8000
+      - "8000:8000"
+    environment:
+      - STORAGE_DIR=/data/storage
+      - DOWNLOADER_URL=http://downloader:8000
+      # Single-user local use: no need to throttle yourself.
+      - RATE_LIMIT_PER_HOUR=0
+    volumes:
+      - stickers_storage:/data/storage
+    depends_on:
+      downloader:
+        condition: service_healthy
+
+  downloader:
+    build: ./downloader
+    environment:
+      - STORAGE_DIR=/data/storage
+    volumes:
+      - stickers_storage:/data/storage
+
+volumes:
+  stickers_storage:
