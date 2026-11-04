@@ -8,7 +8,7 @@ Requiere **dev client** (no funciona en Expo Go) porque incluye un módulo nativ
 
 ## 1. Configurar el backend
 
-1. Levantá el backend (ver `../server/README.md`): `docker compose up --build` desde `server/`.
+1. Levantá el backend (ver `../server-go/README.md`): `docker compose up --build` desde la raíz del repo.
 2. Encontrá la IP de tu Mac en la red local:
    ```bash
    ipconfig getifaddr en0

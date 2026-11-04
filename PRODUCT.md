@@ -22,7 +22,7 @@ The core value is precision editing, not just convenience: the in-app trim timel
 
 - Mobile-only workflow, phone in hand, personal WhatsApp use.
 - Requires a custom Expo dev client (not Expo Go) because of the native `modules/whatsapp-stickers` Android module.
-- Depends on a self-hosted FastAPI backend (`server/`) reachable over the local network (LAN, via the Mac's IP — cleartext HTTP in dev) for downloading/processing TikTok video and rendering the final WebP sticker.
+- Depends on a self-hosted Go backend (`server-go/`, with a small yt-dlp `downloader/` service) reachable over the local network (LAN, via the Mac's IP — cleartext HTTP in dev) for downloading/processing TikTok video and rendering the final WebP sticker.
 - Job lifecycle surfaces real async states the UI must reflect: `pending → downloading → processing → ready` (or `failed`) for the source job, and a separate `pending → rendering → ready/failed` for each sticker render.
 - WhatsApp's own sticker pack rules are an operating constraint: a pack needs a minimum of 3 stickers before "Add to WhatsApp" is meaningful/enabled, and the app's "is this pack already added?" check depends on an undocumented WhatsApp endpoint that can silently fail without blocking the core add-to-WhatsApp flow.
 
@@ -42,7 +42,7 @@ None established yet. Current icons/theme are unmodified Expo/create-expo-app te
 
 ## Evidence on Hand
 
-- Backend error taxonomy (`server/app/models/schemas.py`: `ErrorCode`) enumerates every user-facing failure state the UI needs copy for: invalid URL, host not allowed, video private/unavailable/too large, download failed, extractor error, render failed, range out of bounds, rate limited, not found, timeout, internal error.
+- Backend error taxonomy (`server-go/internal/models/models.go`: `ErrorCode`) enumerates every user-facing failure state the UI needs copy for: invalid URL, host not allowed, video private/unavailable/too large, download failed, extractor error, render failed, range out of bounds, rate limited, not found, timeout, internal error.
 - No testimonials, case studies, or external proof exist or should be fabricated — this is a pre-release personal project.
 
 ## Product Principles

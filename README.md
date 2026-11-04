@@ -1,8 +1,9 @@
 # Stickers Maker
 
-Turns a TikTok link into a WhatsApp sticker (animated or photo). Two parts:
+Turns a TikTok link into a WhatsApp sticker (animated or photo). Three parts:
 
-- `server/` — FastAPI + yt-dlp + ffmpeg backend (Docker). Details in [`server/README.md`](server/README.md).
+- `server-go/` — Go API + ffmpeg (Docker): probe, previews and sticker rendering.
+- `downloader/` — small FastAPI + yt-dlp service that only downloads the TikTok video.
 - `app/` — Expo/React Native app (Android). Details in [`app/README.md`](app/README.md).
 
 This document is the quick end-to-end guide: run the backend and produce a local build of
@@ -19,10 +20,12 @@ the app to install it on your phone.
 ## 1. Run the backend
 
 ```bash
-cd server
-docker compose up --build
+docker compose up --build        # from the repo root: api (Go) + downloader (yt-dlp)
 curl http://localhost:8000/health
 ```
+
+When TikTok breaks yt-dlp (`extractor_error` jobs), only the downloader needs a rebuild:
+`docker compose build --no-cache downloader && docker compose up -d`.
 
 Note your Mac's local network IP, you'll need it in the next step:
 
@@ -30,7 +33,7 @@ Note your Mac's local network IP, you'll need it in the next step:
 ipconfig getifaddr en0
 ```
 
-More detail (tests, endpoints, WhatsApp limits) in [`server/README.md`](server/README.md).
+More detail (tests, endpoints, WhatsApp limits) in [`server-go/README.md`](server-go/README.md).
 
 ## 2. Configure the app
 
@@ -92,4 +95,5 @@ updates JS/TS.
   commenting out the two lines in `app/.gitignore`, so `.env` didn't make it into the
   package. Repeat step 3.
 - **`extractor_error` when creating a job**: TikTok changed something and broke yt-dlp.
-  See the "Actualizar yt-dlp" section in [`server/README.md`](server/README.md).
+  Rebuild only the downloader: `docker compose build --no-cache downloader && docker compose up -d`
+  (it pulls the latest yt-dlp release).
