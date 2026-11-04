@@ -170,6 +170,17 @@ function RangeHandles({
     })
     .onEnd(() => runOnJS(notifyDragEnd)());
 
+  // Dragging the middle of the selection slides the whole range, keeping its
+  // length, clamped to the track bounds.
+  const moveGesture = Gesture.Pan()
+    .onChange((e) => {
+      const delta = clamp(e.changeX, -startX.value, usableWidth - endX.value);
+      startX.value += delta;
+      endX.value += delta;
+      runOnJS(commit)(startX.value, endX.value);
+    })
+    .onEnd(() => runOnJS(notifyDragEnd)());
+
   const startHandleStyle = useAnimatedStyle(() => ({ transform: [{ translateX: startX.value }] }));
   const endHandleStyle = useAnimatedStyle(() => ({ transform: [{ translateX: endX.value }] }));
   const selectionStyle = useAnimatedStyle(() => ({
@@ -191,7 +202,9 @@ function RangeHandles({
 
   return (
     <>
-      <Animated.View pointerEvents="none" style={[styles.selection, selectionStyle]} />
+      <GestureDetector gesture={moveGesture}>
+        <Animated.View style={[styles.selection, selectionStyle]} />
+      </GestureDetector>
       <Animated.View pointerEvents="none" style={[styles.playbackLine, playbackStyle]} />
       <GestureDetector gesture={startGesture}>
         <Animated.View style={[styles.handle, startHandleStyle]} />
