@@ -21,12 +21,12 @@ import (
 // Renderer produces the sticker files. *sticker.Fitter implements it; tests
 // substitute a fake so the API can be exercised without libwebp.
 type Renderer interface {
-	FitAnimated(ctx context.Context, source, out string, start, end float64,
-		crop sticker.CropPixels, srcW, srcH int) (models.RenderFitInfo, error)
+	FitAnimated(ctx context.Context, source, out string, segments []models.Segment,
+		crop sticker.CropPixels, srcW, srcH int, fill sticker.PaddingFill, speed float64) (models.RenderFitInfo, error)
 	FitStatic(ctx context.Context, source, out string, frameAt float64,
-		crop sticker.CropPixels, srcW, srcH int) (models.RenderFitInfo, error)
+		crop sticker.CropPixels, srcW, srcH int, fill sticker.PaddingFill) (models.RenderFitInfo, error)
 	RenderTray(ctx context.Context, source, out string, frameAt float64,
-		crop sticker.CropPixels, srcW, srcH int) error
+		crop sticker.CropPixels, srcW, srcH int, fill sticker.PaddingFill) error
 }
 
 type Server struct {

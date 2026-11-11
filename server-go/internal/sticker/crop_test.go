@@ -111,3 +111,33 @@ func TestPreBlurIsAppendedLast(t *testing.T) {
 		t.Errorf("got %s", vf)
 	}
 }
+
+func TestCropFilterSpeedPrependsSetpts(t *testing.T) {
+	c := CropPixels{X: 0, Y: 0, Width: 720, Height: 720}
+	for _, fill := range []PaddingFill{FillTransparent, FillBlur} {
+		vf := CropFilter(c, 720, 1280, 512, FilterOpts{FPS: 15, Fill: fill, Speed: 1.5})
+		if !strings.HasPrefix(vf, "setpts=PTS/1.5000,") {
+			t.Errorf("%s: speed not first in chain: %s", fill, vf)
+		}
+	}
+	if vf := CropFilter(c, 720, 1280, 512, FilterOpts{Speed: 1}); strings.Contains(vf, "setpts") {
+		t.Errorf("1x must not add setpts: %s", vf)
+	}
+}
+
+func TestClipSegments(t *testing.T) {
+	segs := []models.Segment{{Start: 1, End: 3}, {Start: 5, End: 8}}
+	if got := segmentsTotal(segs); got != 5 {
+		t.Fatalf("total = %v", got)
+	}
+	got := clipSegments(segs, 3)
+	if len(got) != 2 || got[1] != (models.Segment{Start: 5, End: 6}) {
+		t.Errorf("clip to 3 = %+v", got)
+	}
+	if got := clipSegments(segs, 2); len(got) != 1 || got[0] != segs[0] {
+		t.Errorf("clip to 2 = %+v", got)
+	}
+	if got := clipSegments(segs, 99); len(got) != 2 || got[1] != segs[1] {
+		t.Errorf("no clip = %+v", got)
+	}
+}

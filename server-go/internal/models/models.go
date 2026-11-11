@@ -6,6 +6,7 @@ package models
 import (
 	"errors"
 	"net/url"
+	"sort"
 	"strings"
 )
 
@@ -126,13 +127,31 @@ const (
 	Static   RenderType = "static"
 )
 
+// MaxSegments caps how many pieces an animated sticker can be stitched from.
+const MaxSegments = 8
+
+// Segment is one [Start, End) piece of the source video, in seconds.
+type Segment struct {
+	Start float64 `json:"start"`
+	End   float64 `json:"end"`
+}
+
 type CreateRenderRequest struct {
-	Type    RenderType `json:"type"`
-	Start   float64    `json:"start"`
-	End     *float64   `json:"end"`
-	FrameAt *float64   `json:"frame_at"`
-	Crop    CropRect   `json:"crop"`
-	Emojis  []string   `json:"emojis"`
+	Type  RenderType `json:"type"`
+	Start float64    `json:"start"`
+	End   *float64   `json:"end"`
+	// Segments (animated only) are joined in order into one sticker. When
+	// empty, [Start, End) is used as the single segment. After Validate it
+	// always holds the segments to render, sorted and non-overlapping.
+	Segments []Segment `json:"segments"`
+	FrameAt  *float64  `json:"frame_at"`
+	Crop     CropRect  `json:"crop"`
+	Emojis   []string  `json:"emojis"`
+	// Background is what fills the areas the video doesn't cover:
+	// "blur" or "transparent". Empty uses the server default.
+	Background string `json:"background"`
+	// Speed is the playback speed multiplier of animated renders (0 = 1x).
+	Speed float64 `json:"speed"`
 }
 
 // Validate checks the request and normalizes it: for static renders with no
@@ -153,12 +172,38 @@ func (r *CreateRenderRequest) Validate() error {
 	if err := r.Crop.Validate(); err != nil {
 		return err
 	}
+	if r.Background != "" && r.Background != "blur" && r.Background != "transparent" {
+		return errors.New("background must be 'blur' or 'transparent'")
+	}
+	if r.Speed != 0 && (r.Speed < 0.25 || r.Speed > 4) {
+		return errors.New("speed must be between 0.25 and 4")
+	}
 	if len(r.Emojis) > 3 {
 		return errors.New("emojis: at most 3")
 	}
 	if r.Type == Animated {
-		if r.End == nil || *r.End <= r.Start {
-			return errors.New("animated renders require end > start")
+		if len(r.Segments) == 0 {
+			if r.End == nil || *r.End <= r.Start {
+				return errors.New("animated renders require end > start")
+			}
+			r.Segments = []Segment{{Start: r.Start, End: *r.End}}
+		} else {
+			if len(r.Segments) > MaxSegments {
+				return errors.New("segments: too many")
+			}
+			for _, sg := range r.Segments {
+				if sg.Start < 0 || sg.End <= sg.Start {
+					return errors.New("each segment requires 0 <= start < end")
+				}
+			}
+			sort.Slice(r.Segments, func(i, j int) bool { return r.Segments[i].Start < r.Segments[j].Start })
+			for i := 1; i < len(r.Segments); i++ {
+				if r.Segments[i].Start < r.Segments[i-1].End {
+					return errors.New("segments must not overlap")
+				}
+			}
+			last := r.Segments[len(r.Segments)-1].End
+			r.Start, r.End = r.Segments[0].Start, &last
 		}
 	} else if r.FrameAt == nil {
 		v := r.Start

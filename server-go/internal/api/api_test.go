@@ -56,24 +56,27 @@ type fakeRenderer struct {
 	err          error
 }
 
-func (f *fakeRenderer) FitAnimated(_ context.Context, _, out string, start, end float64,
-	crop sticker.CropPixels, _, _ int) (models.RenderFitInfo, error) {
+func (f *fakeRenderer) FitAnimated(_ context.Context, _, out string, segs []models.Segment,
+	crop sticker.CropPixels, _, _ int, _ sticker.PaddingFill, _ float64) (models.RenderFitInfo, error) {
 	if f.err != nil {
 		return models.RenderFitInfo{}, f.err
 	}
-	f.animatedArgs, f.crop = []float64{start, end}, crop
+	f.animatedArgs, f.crop = nil, crop
+	for _, sg := range segs {
+		f.animatedArgs = append(f.animatedArgs, sg.Start, sg.End)
+	}
 	fps, q := 12.0, 61
 	return models.RenderFitInfo{FPS: &fps, Quality: &q, Degraded: true}, os.WriteFile(out, []byte("ANIM"), 0o644)
 }
 
 func (f *fakeRenderer) FitStatic(_ context.Context, _, out string, frameAt float64,
-	crop sticker.CropPixels, _, _ int) (models.RenderFitInfo, error) {
+	crop sticker.CropPixels, _, _ int, _ sticker.PaddingFill) (models.RenderFitInfo, error) {
 	f.staticArgs, f.crop = []float64{frameAt}, crop
 	q := 90
 	return models.RenderFitInfo{Quality: &q}, os.WriteFile(out, []byte("STILL"), 0o644)
 }
 
-func (f *fakeRenderer) RenderTray(_ context.Context, _, out string, _ float64, _ sticker.CropPixels, _, _ int) error {
+func (f *fakeRenderer) RenderTray(_ context.Context, _, out string, _ float64, _ sticker.CropPixels, _, _ int, _ sticker.PaddingFill) error {
 	return os.WriteFile(out, []byte("TRAY"), 0o644)
 }
 

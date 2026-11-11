@@ -58,7 +58,7 @@ func TestFitAnimatedEndToEnd(t *testing.T) {
 
 	for _, dur := range []float64{3, 10} {
 		out := filepath.Join(t.TempDir(), "sticker.webp")
-		info, err := f.FitAnimated(context.Background(), src, out, 0, dur, crop, 720, 1280)
+		info, err := f.FitAnimated(context.Background(), src, out, []models.Segment{{Start: 0, End: dur}}, crop, 720, 1280, "", 1)
 		if err != nil {
 			t.Fatalf("dur %v: %v", dur, err)
 		}
@@ -96,12 +96,12 @@ func TestFitStaticTrayAndOutOfFrameCrop(t *testing.T) {
 	// Crop wider than the frame, offset to the left: exercises pad+crop.
 	crop := CropToPixels(modelsCrop(-0.25, 0, 1.5, 1), 720, 1280)
 	stick := filepath.Join(dir, "sticker.webp")
-	info, err := f.FitStatic(context.Background(), src, stick, 1, crop, 720, 1280)
+	info, err := f.FitStatic(context.Background(), src, stick, 1, crop, 720, 1280, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	tray := filepath.Join(dir, "tray.webp")
-	if err := f.RenderTray(context.Background(), src, tray, 1, crop, 720, 1280); err != nil {
+	if err := f.RenderTray(context.Background(), src, tray, 1, crop, 720, 1280, ""); err != nil {
 		t.Fatal(err)
 	}
 	for path, limit := range map[string]int64{stick: f.S.StaticMaxBytes, tray: f.S.TrayMaxBytes} {
@@ -131,18 +131,18 @@ func TestLetterboxFillModesProduceValidOutput(t *testing.T) {
 	sizes := map[string]int64{}
 	for _, mode := range []string{"blur", "transparent"} {
 		f := newTestFitter(t)
-		f.S.PaddingFill = mode
+		f.S.PaddingFill = "blur"
 		dir := t.TempDir()
 		anim := filepath.Join(dir, "a.webp")
 		still := filepath.Join(dir, "s.webp")
 		tray := filepath.Join(dir, "t.webp")
-		if _, err := f.FitAnimated(context.Background(), src, anim, 0, 2, crop, 720, 1280); err != nil {
+		if _, err := f.FitAnimated(context.Background(), src, anim, []models.Segment{{Start: 0, End: 2}}, crop, 720, 1280, PaddingFill(mode), 1); err != nil {
 			t.Fatalf("%s animated: %v", mode, err)
 		}
-		if _, err := f.FitStatic(context.Background(), src, still, 1, crop, 720, 1280); err != nil {
+		if _, err := f.FitStatic(context.Background(), src, still, 1, crop, 720, 1280, PaddingFill(mode)); err != nil {
 			t.Fatalf("%s static: %v", mode, err)
 		}
-		if err := f.RenderTray(context.Background(), src, tray, 1, crop, 720, 1280); err != nil {
+		if err := f.RenderTray(context.Background(), src, tray, 1, crop, 720, 1280, PaddingFill(mode)); err != nil {
 			t.Fatalf("%s tray: %v", mode, err)
 		}
 		for name, path := range map[string]string{"animated": anim, "static": still, "tray": tray} {
@@ -162,4 +162,29 @@ func TestLetterboxFillModesProduceValidOutput(t *testing.T) {
 		sizes[mode] = st.Size()
 	}
 	t.Logf("static letterbox: blur fill %d B, transparent %d B", sizes["blur"], sizes["transparent"])
+}
+
+func TestFitAnimatedJoinsSegmentsAtSpeed(t *testing.T) {
+	requireLibwebp(t)
+	src := testVideo(t, 10)
+	f := newTestFitter(t)
+	crop := CropToPixels(modelsCrop(0, 0.2188, 1, 0.5625), 720, 1280)
+	segs := []models.Segment{{Start: 1, End: 3}, {Start: 6, End: 8}} // 4s of source
+
+	out := filepath.Join(t.TempDir(), "sticker.webp")
+	info, err := f.FitAnimated(context.Background(), src, out, segs, crop, 720, 1280, "", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := webpinfo.ReadFile(out)
+	if err != nil || w.Width != 512 || w.Height != 512 {
+		t.Fatalf("webp = %+v err=%v", w, err)
+	}
+	// 4s of source at x2 -> ~2s sticker.
+	if w.Duration < 1.7 || w.Duration > 2.3 {
+		t.Errorf("duration = %v, want ~2", w.Duration)
+	}
+	if info.Duration == nil || *info.Duration < 1.9 || *info.Duration > 2.1 {
+		t.Errorf("reported duration = %v, want ~2", info.Duration)
+	}
 }

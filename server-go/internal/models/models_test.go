@@ -67,3 +67,31 @@ func TestCreateJobRequestValidate(t *testing.T) {
 		}
 	}
 }
+
+func TestCreateRenderRequestSegments(t *testing.T) {
+	crop := CropRect{X: 0, Y: 0, Width: 1, Height: 1}
+	mk := func(segs ...Segment) CreateRenderRequest {
+		return CreateRenderRequest{Type: Animated, Segments: segs, Crop: crop}
+	}
+
+	r := CreateRenderRequest{Type: Animated, Start: 1, End: f(2), Crop: crop}
+	if err := r.Validate(); err != nil || len(r.Segments) != 1 || r.Segments[0] != (Segment{1, 2}) {
+		t.Errorf("legacy start/end -> %v, %v", r.Segments, err)
+	}
+
+	r = mk(Segment{4, 5}, Segment{1, 2})
+	if err := r.Validate(); err != nil || r.Segments[0].Start != 1 || r.Start != 1 || *r.End != 5 {
+		t.Errorf("unsorted input must be sorted: %+v %v", r, err)
+	}
+
+	for name, r := range map[string]CreateRenderRequest{
+		"overlap":   mk(Segment{1, 3}, Segment{2, 4}),
+		"empty seg": mk(Segment{1, 1}),
+		"negative":  mk(Segment{-1, 1}),
+		"too many":  mk(make([]Segment, MaxSegments+1)...),
+	} {
+		if r.Validate() == nil {
+			t.Errorf("%s: expected error", name)
+		}
+	}
+}

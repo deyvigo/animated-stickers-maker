@@ -55,9 +55,10 @@ const (
 
 // FilterOpts parameterizes CropFilter.
 type FilterOpts struct {
-	FPS  int         // 0 = keep the source frame rate (stills)
-	Blur float64     // gaussian sigma applied to the final frame, 0 = none
-	Fill PaddingFill // "" is treated as FillTransparent
+	FPS   int         // 0 = keep the source frame rate (stills)
+	Blur  float64     // gaussian sigma applied to the final frame, 0 = none
+	Fill  PaddingFill // "" is treated as FillTransparent
+	Speed float64     // playback speed multiplier; 0 or 1 = unchanged
 }
 
 // CropFilter builds the ffmpeg -vf graph that turns the crop into a
@@ -72,6 +73,11 @@ func CropFilter(c CropPixels, srcW, srcH, dimension int, o FilterOpts) string {
 	}
 	if o.Blur > 0 {
 		vf += fmt.Sprintf(",gblur=sigma=%.2f", o.Blur)
+	}
+	// First in the chain, so the fps filter downstream samples the sped-up
+	// timeline and the output keeps the requested frame rate.
+	if o.Speed > 0 && o.Speed != 1 {
+		vf = fmt.Sprintf("setpts=PTS/%.4f,", o.Speed) + vf
 	}
 	return vf
 }

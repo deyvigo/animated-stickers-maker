@@ -50,8 +50,12 @@ func NewFitter(s config.Settings) *Fitter {
 	return &Fitter{S: s, Policy: DefaultPolicy}
 }
 
-func (f *Fitter) filterOpts(fps int, blur float64) FilterOpts {
-	return FilterOpts{FPS: fps, Blur: blur, Fill: PaddingFill(f.S.PaddingFill)}
+// filterOpts uses the per-request fill when given, else the server default.
+func (f *Fitter) filterOpts(fps int, blur float64, fill PaddingFill, speed float64) FilterOpts {
+	if fill == "" {
+		fill = PaddingFill(f.S.PaddingFill)
+	}
+	return FilterOpts{FPS: fps, Blur: blur, Fill: fill, Speed: speed}
 }
 
 func sibling(out, tag string) string {
@@ -100,12 +104,55 @@ func fileSize(path string) (int64, error) {
 	return st.Size(), nil
 }
 
-func (f *Fitter) animatedArgs(source, out string, start, duration float64, vf string, q int) []string {
-	return []string{
-		"-ss", fmt.Sprintf("%.3f", start),
-		"-t", fmt.Sprintf("%.3f", duration),
-		"-i", source,
-		"-vf", vf,
+// clipSegments keeps the first `total` seconds of the segments, in order,
+// cutting the last one short (and dropping any after it) when they exceed it.
+func clipSegments(segs []models.Segment, total float64) []models.Segment {
+	var out []models.Segment
+	left := total
+	for _, sg := range segs {
+		if left <= 0.001 {
+			break
+		}
+		d := min(sg.End-sg.Start, left)
+		out = append(out, models.Segment{Start: sg.Start, End: sg.Start + d})
+		left -= d
+	}
+	return out
+}
+
+func segmentsTotal(segs []models.Segment) float64 {
+	t := 0.0
+	for _, sg := range segs {
+		t += sg.End - sg.Start
+	}
+	return t
+}
+
+func (f *Fitter) animatedArgs(source, out string, segs []models.Segment, vf string, q int) []string {
+	var args []string
+	if len(segs) == 1 {
+		args = []string{
+			"-ss", fmt.Sprintf("%.3f", segs[0].Start),
+			"-t", fmt.Sprintf("%.3f", segs[0].End-segs[0].Start),
+			"-i", source,
+			"-vf", vf,
+		}
+	} else {
+		// One seeking input per segment, joined by concat: each input's
+		// timestamps restart at 0 and concat offsets them in order. The
+		// crop/fill/speed chain then runs once on the joined clip.
+		var ins strings.Builder
+		for i, sg := range segs {
+			args = append(args,
+				"-ss", fmt.Sprintf("%.3f", sg.Start),
+				"-t", fmt.Sprintf("%.3f", sg.End-sg.Start),
+				"-i", source)
+			fmt.Fprintf(&ins, "[%d:v]", i)
+		}
+		graph := fmt.Sprintf("%sconcat=n=%d:v=1:a=0[joined];[joined]%s[out]", ins.String(), len(segs), vf)
+		args = append(args, "-filter_complex", graph, "-map", "[out]")
+	}
+	return append(args,
 		"-an",
 		"-loop", "0",
 		"-c:v", "libwebp_anim",
@@ -117,24 +164,29 @@ func (f *Fitter) animatedArgs(source, out string, start, duration float64, vf st
 		"-compression_level", "4",
 		"-fps_mode", "passthrough",
 		out,
-	}
+	)
 }
 
-// FitAnimated renders [start, end) of source as an animated sticker under
+// FitAnimated renders the segments of source, joined in order, as an animated sticker under
 // the animated byte budget, writing the result to out.
-func (f *Fitter) FitAnimated(ctx context.Context, source, out string, start, end float64,
-	crop CropPixels, srcW, srcH int) (models.RenderFitInfo, error) {
+func (f *Fitter) FitAnimated(ctx context.Context, source, out string, segments []models.Segment,
+	crop CropPixels, srcW, srcH int, fill PaddingFill, speed float64) (models.RenderFitInfo, error) {
 
-	duration := min(end-start, f.S.MaxClipSeconds-durationSafetyMargin)
+	if speed <= 0 {
+		speed = 1
+	}
+	// duration is in source seconds; the sticker lasts duration/speed, and
+	// that is what has to stay under the WhatsApp limit.
+	duration := min(segmentsTotal(segments), (f.S.MaxClipSeconds-durationSafetyMargin)*speed)
 	bf := newBestFile(out)
 	defer bf.cleanup()
 
 	for attempt := 0; attempt <= maxDurationRetries; attempt++ {
 		var bestAttempt Attempt
 		enc := func(ctx context.Context, a Attempt) (int64, error) {
-			vf := CropFilter(crop, srcW, srcH, f.S.StickerDimension, f.filterOpts(a.FPS, a.Blur))
+			vf := CropFilter(crop, srcW, srcH, f.S.StickerDimension, f.filterOpts(a.FPS, a.Blur, fill, speed))
 			if err := media.RunFFmpeg(ctx, f.S.FFmpegTimeout, renderMsgs,
-				f.animatedArgs(source, bf.try, start, duration, vf, a.Quality)...); err != nil {
+				f.animatedArgs(source, bf.try, clipSegments(segments, duration), vf, a.Quality)...); err != nil {
 				return 0, err
 			}
 			size, err := fileSize(bf.try)
@@ -161,7 +213,7 @@ func (f *Fitter) FitAnimated(ctx context.Context, source, out string, start, end
 			if err := f.validate(out, true); err != nil {
 				return models.RenderFitInfo{}, err
 			}
-			fps, q, dur, blur := float64(best.FPS), best.Quality, duration, best.Blur
+			fps, q, dur, blur := float64(best.FPS), best.Quality, duration/speed, best.Blur
 			info := models.RenderFitInfo{
 				FPS:      &fps,
 				Quality:  &q,
@@ -171,7 +223,7 @@ func (f *Fitter) FitAnimated(ctx context.Context, source, out string, start, end
 					best.Blur > 0 || attempt > 0,
 			}
 			if attempt > 0 {
-				note := fmt.Sprintf("duración recortada a %.1fs", duration)
+				note := fmt.Sprintf("duración recortada a %.1fs", duration/speed)
 				info.Note = &note
 			}
 			return info, nil
@@ -231,9 +283,9 @@ func (f *Fitter) fitStill(ctx context.Context, source, out string, frameAt float
 
 // FitStatic renders a single frame as a static sticker under the static budget.
 func (f *Fitter) FitStatic(ctx context.Context, source, out string, frameAt float64,
-	crop CropPixels, srcW, srcH int) (models.RenderFitInfo, error) {
+	crop CropPixels, srcW, srcH int, fill PaddingFill) (models.RenderFitInfo, error) {
 
-	vf := CropFilter(crop, srcW, srcH, f.S.StickerDimension, f.filterOpts(0, 0))
+	vf := CropFilter(crop, srcW, srcH, f.S.StickerDimension, f.filterOpts(0, 0, fill, 1))
 	q, err := f.fitStill(ctx, source, out, frameAt, vf, f.S.StaticMaxBytes)
 	if err != nil {
 		return models.RenderFitInfo{}, err
@@ -251,9 +303,9 @@ func (f *Fitter) FitStatic(ctx context.Context, source, out string, frameAt floa
 // RenderTray writes the 96x96 tray icon derived from the same frame/crop.
 // Always WebP (WhatsApp accepts PNG or WebP for the tray icon).
 func (f *Fitter) RenderTray(ctx context.Context, source, out string, frameAt float64,
-	crop CropPixels, srcW, srcH int) error {
+	crop CropPixels, srcW, srcH int, fill PaddingFill) error {
 
-	vf := CropFilter(crop, srcW, srcH, f.S.TrayDimension, f.filterOpts(0, 0))
+	vf := CropFilter(crop, srcW, srcH, f.S.TrayDimension, f.filterOpts(0, 0, fill, 1))
 	q, err := f.fitStill(ctx, source, out, frameAt, vf, f.S.TrayMaxBytes)
 	if err != nil {
 		return err

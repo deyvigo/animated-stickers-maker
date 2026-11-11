@@ -174,13 +174,15 @@ func (s *Server) runRender(ctx context.Context, renderID, jobID string, req mode
 		frameAt = *req.FrameAt
 	}
 	animated := req.Type == models.Animated
-	var end float64
-	if animated {
-		end = *req.End // Validate guarantees it is set
-	}
 	// Small tolerance on the end: the editor's slider can land a hair past
 	// the probed duration.
-	if req.Start >= md.Duration || (animated && end > md.Duration+0.25) {
+	outOfBounds := req.Start >= md.Duration
+	for _, sg := range req.Segments { // Validate fills these for animated renders
+		if sg.Start >= md.Duration || sg.End > md.Duration+0.25 {
+			outOfBounds = true
+		}
+	}
+	if outOfBounds {
 		return apperr.New(models.RangeOutOfBounds, "El recorte elegido está fuera del video.")
 	}
 
@@ -190,14 +192,14 @@ func (s *Server) runRender(ctx context.Context, renderID, jobID string, req mode
 
 	var fit models.RenderFitInfo
 	if animated {
-		fit, err = s.Renderer.FitAnimated(ctx, source, stickerPath, req.Start, end, crop, md.Width, md.Height)
+		fit, err = s.Renderer.FitAnimated(ctx, source, stickerPath, req.Segments, crop, md.Width, md.Height, sticker.PaddingFill(req.Background), req.Speed)
 	} else {
-		fit, err = s.Renderer.FitStatic(ctx, source, stickerPath, frameAt, crop, md.Width, md.Height)
+		fit, err = s.Renderer.FitStatic(ctx, source, stickerPath, frameAt, crop, md.Width, md.Height, sticker.PaddingFill(req.Background))
 	}
 	if err != nil {
 		return err
 	}
-	if err := s.Renderer.RenderTray(ctx, source, trayPath, frameAt, crop, md.Width, md.Height); err != nil {
+	if err := s.Renderer.RenderTray(ctx, source, trayPath, frameAt, crop, md.Width, md.Height, sticker.PaddingFill(req.Background)); err != nil {
 		return err
 	}
 
