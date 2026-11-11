@@ -23,10 +23,17 @@ import Animated, {
 
 import { Kiosk, Spacing } from "@/constants/theme";
 import { ZoomableVideoCrop } from "@/features/editor/ZoomableVideoCrop";
+import { addSegment, Segment } from "@/features/editor/segments";
 import { TrimTimeline } from "@/features/editor/TrimTimeline";
-import { absoluteUrl, ApiRequestError, CropRect } from "@/lib/api";
+import {
+  absoluteUrl,
+  ApiRequestError,
+  CropRect,
+  StickerBackground,
+} from "@/lib/api";
 import { useCreateRender, useJob, useRender } from "@/lib/queries";
 
+const SPEED_OPTIONS = [0.5, 0.75, 1, 1.2, 1.5, 2] as const;
 const DEFAULT_ANIMATED_CLIP_SECONDS = 3;
 // WhatsApp's own hard cap is 10s (see server/app/core/config.py), but past
 // ~5s the 500KB budget forces the fitter deep into its fps/quality ladder
@@ -59,9 +66,13 @@ export default function EditorScreen() {
   const createRender = useCreateRender(jobId);
 
   const [mode, setMode] = useState<"animated" | "static">("animated");
+  const [background, setBackground] = useState<StickerBackground>("blur");
+  const [speed, setSpeed] = useState<number>(1);
   const [crop, setCrop] = useState<CropRect | null>(null);
-  const [start, setStart] = useState(0);
-  const [end, setEnd] = useState(DEFAULT_ANIMATED_CLIP_SECONDS);
+  const [segments, setSegments] = useState<Segment[]>([
+    { start: 0, end: DEFAULT_ANIMATED_CLIP_SECONDS },
+  ]);
+  const [activeSegment, setActiveSegment] = useState(0);
   const [frameAt, setFrameAt] = useState(0);
   const [error, setError] = useState<string | null>(null);
   // Set once the render is created, cleared once we navigate away or it
@@ -96,8 +107,8 @@ export default function EditorScreen() {
       DEFAULT_ANIMATED_CLIP_SECONDS,
       metadata.duration,
     );
-    setStart(0);
-    setEnd(clipLength);
+    setSegments([{ start: 0, end: clipLength }]);
+    setActiveSegment(0);
     setFrameAt(metadata.duration / 2);
   }, [metadata, crop]);
 
@@ -108,7 +119,7 @@ export default function EditorScreen() {
   const player = useVideoPlayer(proxyUrl ?? "", (p) => {
     p.loop = true;
     p.muted = true;
-    p.timeUpdateEventInterval = 0.1; // default is 0 (event never fires) — needed for the range clamp below
+    p.timeUpdateEventInterval = 0.05; // default is 0 (event never fires) — needed to hop between segments below
   });
 
   // Kept in refs (not state) so the timeUpdate listener below always reads
@@ -116,25 +127,37 @@ export default function EditorScreen() {
   // dragging a trim handle.
   const modeRef = useRef(mode);
   modeRef.current = mode;
-  const startRef = useRef(start);
-  startRef.current = start;
-  const endRef = useRef(end);
-  endRef.current = end;
+  const segmentsRef = useRef(segments);
+  segmentsRef.current = segments;
+  const speedRef = useRef(speed);
+  speedRef.current = speed;
 
   // Live playback position for the moving line on the timeline. A shared
   // value (not React state) so it updates on the UI thread ~10x/sec without
   // re-rendering this whole screen every tick.
   const playbackTime = useSharedValue(0);
 
-  // Preview only the selected clip: whenever playback drifts past `end` (or
-  // the user just dragged the range so the current position now falls
-  // outside it), snap back to `start` instead of playing the whole video.
+  // Preview only the selected pieces: whenever playback leaves a segment
+  // (or the user just dragged one so the current position now falls
+  // outside), jump to the start of the next segment — wrapping to the first
+  // after the last — instead of playing the whole video.
   useEventListener(player, "timeUpdate", ({ currentTime }) => {
     playbackTime.value = currentTime;
     if (modeRef.current !== "animated") return;
-    if (currentTime < startRef.current || currentTime >= endRef.current) {
-      player.currentTime = startRef.current;
-    }
+    const segs = segmentsRef.current;
+    // Jump one event early (in video seconds, so scaled by playback speed):
+    // the event only fires every 50ms, and waiting until we're past `end`
+    // would show frames of the gap that aren't in the sticker.
+    const lookahead = 0.05 * speedRef.current;
+    if (
+      segs.some(
+        (sg) => currentTime >= sg.start && currentTime < sg.end - lookahead,
+      )
+    )
+      return;
+    player.currentTime = (
+      segs.find((sg) => sg.start >= currentTime) ?? segs[0]
+    ).start;
   });
 
   // Switching modes: animated plays (looping within [start, end] via the
@@ -144,14 +167,19 @@ export default function EditorScreen() {
     if (mode === "static") {
       player.pause();
     } else {
-      player.currentTime = start;
+      player.currentTime = segmentsRef.current[0].start;
       player.play();
     }
-    // Deliberately not depending on start/end/frameAt — those are handled
+    // Deliberately not depending on segments/frameAt — those are handled
     // continuously by the timeUpdate listener / the effect below instead,
     // so dragging a handle doesn't restart playback on every frame.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [proxyUrl, mode, player]);
+
+  // The preview plays at the chosen speed, same as the generated sticker.
+  useEffect(() => {
+    player.playbackRate = speed;
+  }, [player, speed]);
 
   // Static mode: keep the shown frame in sync while dragging the playhead.
   useEffect(() => {
@@ -227,18 +255,47 @@ export default function EditorScreen() {
     );
   }
 
+  // One budget shared by all pieces together (see MAX_ANIMATED_CLIP_SECONDS).
+  const maxTotalSeconds = Math.min(
+    MAX_ANIMATED_CLIP_SECONDS,
+    metadata.duration,
+  );
+  const added = addSegment(segments, metadata.duration, maxTotalSeconds);
+
+  const handleAddSegment = () => {
+    if (!added) return;
+    setSegments(added.segments);
+    setActiveSegment(added.index);
+  };
+
+  const handleRemoveSegment = () => {
+    if (segments.length < 2) return;
+    setSegments(segments.filter((_, i) => i !== activeSegment));
+    setActiveSegment(Math.max(0, activeSegment - 1));
+  };
+
   const handleGenerate = async () => {
     setError(null);
     try {
       const render = await createRender.mutateAsync(
         mode === "animated"
-          ? { type: "animated", start, end, crop, emojis: [] }
+          ? {
+              type: "animated",
+              start: segments[0].start,
+              end: segments[segments.length - 1].end,
+              segments,
+              crop,
+              emojis: [],
+              background,
+              speed,
+            }
           : {
               type: "static",
               start: frameAt,
               frame_at: frameAt,
               crop,
               emojis: [],
+              background,
             },
       );
       setPendingRenderId(render.render_id);
@@ -259,6 +316,31 @@ export default function EditorScreen() {
             below claims its natural height — otherwise a preview taking
             the full available height could push the timeline/button off
             the bottom of the screen. */}
+        <View style={styles.modeToggle}>
+          {(
+            [
+              ["transparent", "Transparente"],
+              ["blur", "Difuminado"],
+            ] as const
+          ).map(([value, label]) => (
+            <Pressable
+              key={value}
+              onPress={() => setBackground(value)}
+              style={[
+                styles.modeButton,
+                background === value && styles.modeButtonActive,
+              ]}>
+              <Text
+                style={[
+                  styles.modeButtonLabel,
+                  background === value && styles.modeButtonLabelActive,
+                ]}>
+                {label}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+
         <View style={styles.previewFlex} onLayout={onPreviewFlexLayout}>
           {/* Always an exact square (1:1) — matches the sticker's own
               512x512 output, so this frame's edges are precisely the crop
@@ -298,27 +380,71 @@ export default function EditorScreen() {
             ))}
           </View>
 
+          {mode === "animated" && (
+            <View style={styles.modeToggle}>
+              {SPEED_OPTIONS.map((s) => (
+                <Pressable
+                  key={s}
+                  onPress={() => setSpeed(s)}
+                  style={[
+                    styles.modeButton,
+                    speed === s && styles.modeButtonActive,
+                  ]}>
+                  <Text
+                    style={[
+                      styles.modeButtonLabel,
+                      speed === s && styles.modeButtonLabelActive,
+                    ]}>
+                    {`x${s}`}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+          )}
+
           {mode === "animated" ? (
+            <>
             <TrimTimeline
               mode="animated"
+              speed={speed}
               durationSec={metadata.duration}
               spriteUri={absoluteUrl(job.sprite_url)}
-              start={start}
-              end={end}
-              maxClipSeconds={Math.min(
-                MAX_ANIMATED_CLIP_SECONDS,
-                metadata.duration,
-              )}
-              onChange={(s, e) => {
-                setStart(s);
-                setEnd(e);
-              }}
+              segments={segments}
+              activeIndex={activeSegment}
+              onSelect={setActiveSegment}
+              maxTotalSeconds={maxTotalSeconds}
+              onChange={(s, e) =>
+                setSegments((prev) =>
+                  prev.map((sg, i) =>
+                    i === activeSegment ? { start: s, end: e } : sg,
+                  ),
+                )
+              }
               playbackTime={playbackTime}
               onDragEnd={() => {
-                player.currentTime = startRef.current;
+                player.currentTime = segmentsRef.current[activeSegment].start;
                 player.play();
               }}
             />
+            <View style={styles.segmentActions}>
+              <Pressable
+                onPress={handleAddSegment}
+                disabled={!added}
+                style={[
+                  styles.segmentButton,
+                  !added && styles.segmentButtonDisabled,
+                ]}>
+                <Text style={styles.segmentButtonLabel}>+ Intervalo</Text>
+              </Pressable>
+              {segments.length > 1 && (
+                <Pressable
+                  onPress={handleRemoveSegment}
+                  style={styles.segmentButton}>
+                  <Text style={styles.segmentButtonLabel}>Quitar este</Text>
+                </Pressable>
+              )}
+            </View>
+            </>
           ) : (
             <TrimTimeline
               mode="static"
@@ -387,6 +513,27 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: Kiosk.border,
     alignSelf: "center",
+  },
+  segmentActions: {
+    flexDirection: "row",
+    justifyContent: "center",
+    gap: Spacing.two,
+  },
+  segmentButton: {
+    paddingVertical: Spacing.two,
+    paddingHorizontal: Spacing.three,
+    borderRadius: Spacing.two + Spacing.one,
+    backgroundColor: Kiosk.inset,
+    borderWidth: 1,
+    borderColor: Kiosk.border,
+  },
+  segmentButtonDisabled: {
+    opacity: 0.4,
+  },
+  segmentButtonLabel: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: Kiosk.textSecondary,
   },
   modeButton: {
     paddingVertical: Spacing.two,

@@ -1,6 +1,6 @@
 import { Image } from 'expo-image';
 import { useCallback, useState } from 'react';
-import { LayoutChangeEvent, StyleSheet, Text, View } from 'react-native';
+import { LayoutChangeEvent, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
   runOnJS,
@@ -10,6 +10,14 @@ import Animated, {
 } from 'react-native-reanimated';
 
 import { Kiosk, Spacing } from '@/constants/theme';
+
+import {
+  boundsFor,
+  maxLengthFor,
+  MIN_SEGMENT_SECONDS,
+  Segment,
+  totalSeconds,
+} from './segments';
 
 const HANDLE_WIDTH = 20;
 const TRACK_HEIGHT = 64;
@@ -24,10 +32,17 @@ interface AnimatedRangeProps {
   mode: 'animated';
   durationSec: number;
   spriteUri: string | null;
-  start: number;
-  end: number;
-  maxClipSeconds: number;
+  /** Pieces joined into the sticker, sorted by start. */
+  segments: Segment[];
+  /** The segment whose handles are shown and editable. */
+  activeIndex: number;
+  onSelect: (index: number) => void;
+  /** Budget shared by all segments together. */
+  maxTotalSeconds: number;
   minClipSeconds?: number;
+  /** Playback speed multiplier; the sticker lasts total / speed. */
+  speed?: number;
+  /** Fired with the new bounds of the active segment. */
   onChange: (start: number, end: number) => void;
   /** Live playback position (seconds), updated ~10x/sec from the video
    * player's timeUpdate event. A shared value so it drives the moving line
@@ -73,26 +88,49 @@ export function TrimTimeline(props: TrimTimelineProps) {
 
   return (
     <View style={styles.container}>
+      <Text style={styles.hint}>
+        {props.mode === 'animated' ? animatedHint(props) : `Cuadro en ${props.frameAt.toFixed(1)}s`}
+      </Text>
       <View style={styles.track} onLayout={onLayout}>
         {props.spriteUri && (
           <Image source={{ uri: props.spriteUri }} style={StyleSheet.absoluteFill} contentFit="cover" />
         )}
         {trackWidth > 0 &&
           (props.mode === 'animated' ? (
-            <RangeHandles
-              key={trackWidth}
-              usableWidth={usableWidth}
-              start={props.start}
-              end={props.end}
-              maxClipSeconds={props.maxClipSeconds}
-              minClipSeconds={props.minClipSeconds ?? 0.5}
-              durationSec={props.durationSec}
-              secToPx={secToPx}
-              pxToSec={pxToSec}
-              onChange={props.onChange}
-              playbackTime={props.playbackTime}
-              onDragEnd={props.onDragEnd}
-            />
+            <>
+              {props.segments.map((seg, i) =>
+                i === props.activeIndex ? null : (
+                  <Pressable
+                    key={`${i}-${seg.start}`}
+                    onPress={() => props.onSelect(i)}
+                    style={[
+                      styles.selection,
+                      styles.inactiveSelection,
+                      {
+                        left: secToPx(seg.start) + HANDLE_WIDTH / 2,
+                        width: Math.max(0, secToPx(seg.end) - secToPx(seg.start)),
+                      },
+                    ]}
+                  />
+                ),
+              )}
+              <RangeHandles
+                key={`${trackWidth}-${props.activeIndex}`}
+                usableWidth={usableWidth}
+                start={props.segments[props.activeIndex].start}
+                end={props.segments[props.activeIndex].end}
+                lowerSec={boundsFor(props.segments, props.activeIndex, props.durationSec).lower}
+                upperSec={boundsFor(props.segments, props.activeIndex, props.durationSec).upper}
+                maxClipSeconds={maxLengthFor(props.segments, props.activeIndex, props.maxTotalSeconds)}
+                minClipSeconds={props.minClipSeconds ?? MIN_SEGMENT_SECONDS}
+                durationSec={props.durationSec}
+                secToPx={secToPx}
+                pxToSec={pxToSec}
+                onChange={props.onChange}
+                playbackTime={props.playbackTime}
+                onDragEnd={props.onDragEnd}
+              />
+            </>
           ) : (
             <Playhead
               key={trackWidth}
@@ -104,19 +142,26 @@ export function TrimTimeline(props: TrimTimelineProps) {
             />
           ))}
       </View>
-      <Text style={styles.hint}>
-        {props.mode === 'animated'
-          ? `${(props.end - props.start).toFixed(1)}s seleccionados (máx. ${props.maxClipSeconds}s)`
-          : `Cuadro en ${props.frameAt.toFixed(1)}s`}
-      </Text>
     </View>
   );
+}
+
+function animatedHint(props: AnimatedRangeProps): string {
+  const total = totalSeconds(props.segments);
+  const speed = props.speed ?? 1;
+  const count = props.segments.length > 1 ? `${props.segments.length} tramos · ` : '';
+  const head = `${count}${total.toFixed(1)}s seleccionados`;
+  return speed !== 1
+    ? `${head} · dura ${(total / speed).toFixed(1)}s a x${speed}`
+    : `${head} (máx. ${props.maxTotalSeconds}s)`;
 }
 
 function RangeHandles({
   usableWidth,
   start,
   end,
+  lowerSec,
+  upperSec,
   maxClipSeconds,
   minClipSeconds,
   durationSec,
@@ -129,6 +174,9 @@ function RangeHandles({
   usableWidth: number;
   start: number;
   end: number;
+  /** The active segment can't cross its neighbours (or the video's ends). */
+  lowerSec: number;
+  upperSec: number;
   maxClipSeconds: number;
   minClipSeconds: number;
   durationSec: number;
@@ -142,6 +190,8 @@ function RangeHandles({
   const endX = useSharedValue(secToPx(end));
   const minGapPx = secToPx(minClipSeconds);
   const maxGapPx = secToPx(maxClipSeconds);
+  const lowerPx = secToPx(lowerSec);
+  const upperPx = Math.min(usableWidth, secToPx(upperSec));
 
   const commit = useCallback(
     (nextStartPx: number, nextEndPx: number) => {
@@ -154,7 +204,7 @@ function RangeHandles({
 
   const startGesture = Gesture.Pan()
     .onChange((e) => {
-      const min = Math.max(0, endX.value - maxGapPx);
+      const min = Math.max(lowerPx, endX.value - maxGapPx);
       const max = endX.value - minGapPx;
       startX.value = clamp(startX.value + e.changeX, min, max);
       runOnJS(commit)(startX.value, endX.value);
@@ -164,7 +214,7 @@ function RangeHandles({
   const endGesture = Gesture.Pan()
     .onChange((e) => {
       const min = startX.value + minGapPx;
-      const max = Math.min(usableWidth, startX.value + maxGapPx);
+      const max = Math.min(upperPx, startX.value + maxGapPx);
       endX.value = clamp(endX.value + e.changeX, min, max);
       runOnJS(commit)(startX.value, endX.value);
     })
@@ -174,7 +224,7 @@ function RangeHandles({
   // length, clamped to the track bounds.
   const moveGesture = Gesture.Pan()
     .onChange((e) => {
-      const delta = clamp(e.changeX, -startX.value, usableWidth - endX.value);
+      const delta = clamp(e.changeX, lowerPx - startX.value, upperPx - endX.value);
       startX.value += delta;
       endX.value += delta;
       runOnJS(commit)(startX.value, endX.value);
@@ -188,15 +238,14 @@ function RangeHandles({
     width: Math.max(0, endX.value - startX.value),
   }));
 
-  // Moving line showing where playback currently is inside the selection.
-  // Clamped to [startX, endX] so a stale event just after the trim range
-  // changed doesn't flash the line outside the selection for a frame.
+  // Moving line showing where playback currently is. Playback hops across
+  // all segments, so it is only clamped to the track.
   const playbackStyle = useAnimatedStyle(() => {
     if (!playbackTime || durationSec <= 0) return { opacity: 0 };
     const px = (playbackTime.value / durationSec) * usableWidth;
     return {
       opacity: 1,
-      transform: [{ translateX: HANDLE_WIDTH / 2 + clamp(px, startX.value, endX.value) }],
+      transform: [{ translateX: HANDLE_WIDTH / 2 + clamp(px, 0, usableWidth) }],
     };
   });
 
@@ -268,6 +317,10 @@ const styles = StyleSheet.create({
     borderTopWidth: 3,
     borderBottomWidth: 3,
     minWidth: MIN_STATIC_GAP_PX,
+  },
+  inactiveSelection: {
+    backgroundColor: 'rgba(194, 231, 218, 0.12)',
+    borderColor: Kiosk.border,
   },
   handle: {
     position: 'absolute',

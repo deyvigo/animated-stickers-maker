@@ -55,6 +55,8 @@ export interface CropRect {
   height: number;
 }
 
+export type StickerBackground = "transparent" | "blur";
+
 export interface CreateRenderInput {
   type: StickerType;
   start: number;
@@ -62,6 +64,10 @@ export interface CreateRenderInput {
   frame_at?: number;
   crop: CropRect;
   emojis?: string[];
+  background?: StickerBackground;
+  speed?: number;
+  /** Animated only: pieces joined in order into one sticker. */
+  segments?: { start: number; end: number }[];
 }
 
 export interface RenderFitInfo {
