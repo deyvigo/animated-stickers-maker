@@ -22,12 +22,17 @@ var previewMsgs = Msgs{
 	Failed:  "No se pudo generar la vista previa del video.",
 }
 
-// GenerateProxy writes a small H.264 proxy for smooth scrubbing.
+// GenerateProxy writes a small H.264 proxy for smooth scrubbing. It forces
+// a keyframe every 0.5s: the editor preview seeks back to a segment's start
+// on every loop (and between segments), and with x264's default GOP (up to
+// ~8s) each seek had to decode from a keyframe seconds earlier, which
+// showed up as a visible stall.
 func GenerateProxy(ctx context.Context, source, out string, timeout time.Duration) error {
 	return RunFFmpeg(ctx, timeout, previewMsgs,
 		"-i", source,
 		"-vf", fmt.Sprintf("scale=-2:%d", proxyHeight),
 		"-c:v", "libx264", "-preset", "veryfast", "-crf", "28",
+		"-force_key_frames", "expr:gte(t,n_forced*0.5)",
 		"-c:a", "aac", "-b:a", "96k",
 		"-movflags", "+faststart",
 		out,
